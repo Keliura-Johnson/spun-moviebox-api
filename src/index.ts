@@ -379,6 +379,17 @@ export default {
 
     if (path === '/' && request.method === 'GET') return handleRoot();
     if (path === '/health' && request.method === 'GET') return json({ status: 'ok', ts: Date.now() });
+
+    if (path === '/debug-probe' && request.method === 'GET') {
+      const testQuery = url.searchParams.get('q') ?? 'Avatar';
+      const result = await fetchWithHostPool<any>(
+        env, PATHS.search, 'POST',
+        undefined,
+        { keyword: testQuery, type: 0, subjectType: 0, page: 1, perPage: 10 }
+      );
+      return json({ queryUsed: testQuery, upstreamResult: result });
+    }
+
     if (!isAuthorized(request, env)) return err('Unauthorized', 401);
 
     if (path === '/search' && request.method === 'POST') return handleSearch(request, env);
