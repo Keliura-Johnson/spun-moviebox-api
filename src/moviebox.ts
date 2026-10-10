@@ -2,14 +2,6 @@
 // MovieBox Mobile API client for Cloudflare Workers.
 // Handles host pool fallback, request signing, auth token bootstrap, and all
 // endpoint calls.
-//
-// ─── 2026-06-29 fix ──────────────────────────────────────────────────────────
-// fetchWithHostPool now attaches an `Authorization: Bearer {token}` header to
-// every request, sourced from signing.ts's KV-backed cache. This was the
-// missing piece causing uniform 440/530 rejections across all 7 hosts — the
-// HMAC signing itself was always correct, but MovieBox now also requires a
-// bearer token obtained via a one-time bootstrap call. See signing.ts for
-// the full bootstrap flow and rationale.
 
 import {
   generateClientToken,
@@ -32,14 +24,6 @@ export const HOST_POOL = [
   'https://api.inmoviebox.com',
 ];
 
-// 2026-09-03: bumped from 3.0.03.0529.03 / 50020044 — MovieBox's CDN began
-// rejecting playback with "this version of MovieBox is outdated" once the
-// app moved to the 4.x line. This is the closest version/code pair we could
-// confirm from a real release (MovieBox 4.0.02, build dated 2026-08-28);
-// the true latest at time of writing is 4.0.02.0903.02, but its exact
-// versionCode wasn't independently confirmed, so we're using the last
-// verified pair rather than guessing the integer. Revisit if playback
-// issues persist — may need to bump again once a newer pair is confirmed.
 const VERSION_CODE = 50020125;
 const VERSION_NAME = '4.0.02.0828.03';
 const ANDROID_VERSION = '13';
@@ -55,19 +39,15 @@ const USER_AGENT =
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
 export const PATHS = {
-  search:     '/wefeed-mobile-bff/subject-api/search',
-  get:        '/wefeed-mobile-bff/subject-api/get',
-  seasonInfo: '/wefeed-mobile-bff/subject-api/season-info',
-  resource:   '/wefeed-mobile-bff/subject-api/resource',
-  captions:   '/wefeed-mobile-bff/subject-api/get-ext-captions',
-  // Lightweight bootstrap target — any signed GET works, this is the
-  // smallest/cheapest one. Not used for actual homepage data (that's H5).
+  search:       '/wefeed-mobile-bff/subject-api/search',
+  get:          '/wefeed-mobile-bff/subject-api/get',
+  seasonInfo:   '/wefeed-mobile-bff/subject-api/season-info',
+  resource:     '/wefeed-mobile-bff/subject-api/resource',
+  captions:     '/wefeed-mobile-bff/subject-api/get-ext-captions',
   tabOperating: '/wefeed-mobile-bff/tab-operating',
 };
 
 // ─── Client identity ──────────────────────────────────────────────────────────
-// Generated inside request handlers only — Cloudflare Workers forbid crypto
-// calls (getRandomValues, randomUUID) in the global/module scope.
 
 function makeClientInfo(): string {
   const deviceId = Array.from(crypto.getRandomValues(new Uint8Array(16)))
@@ -96,8 +76,6 @@ function makeClientInfo(): string {
   });
 }
 
-// Lazily cached per isolate lifetime — set on first request, reused after.
-// Never called at module load time so global scope restriction is not triggered.
 let _clientInfo: string | null = null;
 function getClientInfo(): string {
   if (!_clientInfo) _clientInfo = makeClientInfo();
@@ -140,26 +118,7 @@ async function buildHeaders(
   return headers;
 }
 
-// ─── Raw, single-attempt host-pool fetch ──────────────────────────────────────
-// Tries each host in order with the given auth token attached, returning the
-// first successful response along with the x-user header (if present) so the
-// caller can absorb a fresh/rotated token.
-
-interface HostPoolAttemptResult<T> {
-  data: T | null;
-  freshXUserToken: string | null;
-  /** True if every host rejected specifically due to auth (401/403, or an
-   *  API-level "invalid token" style code) rather than other errors — signals
-   *  the caller should bootstrap a new token and retry once. */
-  authFailure: boolean;
-}
-
-// ─── 2026-08-13 relay fix ──────────────────────────────────────────────────
-// MovieBox rejects Cloudflare Workers' egress IPs at the transport layer
-// (440/530 before app logic runs). Every outbound call now goes through a
-// small Render web service that re-issues the already-signed request from a
-// different IP, then hands the upstream status/headers/body back as JSON.
-// See spun-moviebox-relay/README.md for the relay implementation and rationale.
+// ─── Relay fetch implementation ───────────────────────────────────────────────
 
 interface RelayResult {
   status: number;
@@ -177,22 +136,23 @@ function parseRelayResult(value: unknown): RelayResult {
   if (typeof status !== 'number' || !Number.isInteger(status) || status < 100 || status > 599) {
     throw new Error('relay returned an invalid upstream status');
   }
-  if (typeof envelope.body !== 'string') {
-    throw new Error('relay returned an invalid upstream body');
-  }
-  if (!envelope.headers || typeof envelope.headers !== 'object' || Array.isArray(envelope.headers)) {
-    throw new Error('relay returned invalid response headers');
-  }
+  
+  const body = typeof envelope.body === 'string' 
+    ? envelope.body 
+    : JSON.stringify(envelope.body ?? '');
 
+  const rawHeaders = envelope.headers;
   const headers: Record<string, string> = {};
-  for (const [key, headerValue] of Object.entries(envelope.headers)) {
-    if (typeof headerValue !== 'string') {
-      throw new Error(`relay returned a non-string response header: ${key}`);
+  
+  if (rawHeaders && typeof rawHeaders === 'object' && !Array.isArray(rawHeaders)) {
+    for (const [key, headerValue] of Object.entries(rawHeaders)) {
+      if (typeof headerValue === 'string') {
+        headers[key.toLowerCase()] = headerValue;
+      }
     }
-    headers[key] = headerValue;
   }
 
-  return { status, headers, body: envelope.body };
+  return { status, headers, body };
 }
 
 async function relayFetch(
@@ -219,23 +179,24 @@ async function relayFetch(
       'X-Relay-Secret': env.RELAY_SECRET,
     },
     body: JSON.stringify({ url, method, headers, body: bodyStr }),
-    signal: AbortSignal.timeout(20000), // relay hop adds latency — longer than the direct 12s timeout
+    signal: AbortSignal.timeout(20000),
   });
 
   if (!relayResponse.ok) {
-    // The relay itself errored (auth, disallowed host, or its own upstream
-    // fetch failure) — surface as a synthetic failed attempt so the caller's
-    // existing "trying next host" logic handles it the same as any other
-    // failure, rather than needing a separate code path.
     const detail = await relayResponse.text().catch(() => '');
     throw new Error(`relay error ${relayResponse.status}: ${detail}`);
   }
 
+  const responseText = await relayResponse.text();
+  if (!responseText) {
+    throw new Error('relay returned an empty response');
+  }
+
   let rawEnvelope: unknown;
   try {
-    rawEnvelope = await relayResponse.json();
+    rawEnvelope = JSON.parse(responseText);
   } catch {
-    throw new Error('relay returned invalid JSON');
+    throw new Error(`relay returned invalid JSON: ${responseText.slice(0, 100)}`);
   }
 
   return parseRelayResult(rawEnvelope);
@@ -250,6 +211,12 @@ function extractXUserTokenFromHeaders(headers: Record<string, string>): string |
   } catch {
     return null;
   }
+}
+
+interface HostPoolAttemptResult<T> {
+  data: T | null;
+  freshXUserToken: string | null;
+  authFailure: boolean;
 }
 
 async function attemptHostPool<T>(
@@ -313,25 +280,9 @@ async function attemptHostPool<T>(
   return {
     data: null,
     freshXUserToken,
-    // Only treat as a pure auth failure if we got real responses back (not
-    // just transport errors/timeouts) and at least one of them looked like
-    // an auth rejection — otherwise this is a genuine host outage, and
-    // retrying with a new token won't help.
     authFailure: sawAnyResponse && sawAuthFailure,
   };
 }
-
-// ─── Public host pool fetcher (auth-aware) ────────────────────────────────────
-// Tries each host in order, returning the first successful response.
-// Hosts are mirrors — they all serve the same data — so the first working
-// host is sufficient. Firing all hosts simultaneously wastes quota and can
-// trigger rate-limits on the upstream API.
-//
-// Handles the full auth lifecycle: reuses a cached token if we have one,
-// bootstraps a fresh one if we don't, retries once if every host rejected
-// for auth reasons, and absorbs any rotated token MovieBox hands back via
-// the x-user response header so future calls stay current without an extra
-// bootstrap round-trip.
 
 export async function fetchWithHostPool<T>(
   env: SigningEnv,
@@ -365,8 +316,6 @@ export async function fetchWithHostPool<T>(
 
   let result = await attemptHostPool<T>(env, path, method, params, bodyStr, authToken);
 
-  // Absorb any rotated token immediately, regardless of whether this
-  // particular call succeeded — keeps the cache current for next time.
   if (result.freshXUserToken && result.freshXUserToken !== authToken) {
     await bootstrapAuthToken(env, async () => result.freshXUserToken).catch(() => {});
   }
@@ -425,13 +374,12 @@ export interface MBSearchData {
 }
 
 export interface MBDetailData {
-  // Response is flat — all fields at top level, no subject wrapper
   subjectId:        string;
   subjectType:      number;
   title:            string;
   description?:     string;
   releaseDate?:     string;
-  duration?:        number | string;  // "2h 42m" string or seconds number
+  duration?:        number | string;
   genre?:           string;
   cover?:           { url: string };
   countryName?:     string;
@@ -442,13 +390,12 @@ export interface MBDetailData {
 }
 
 export interface MBSeasonData {
-  subjectId?:  string;
+  subjectId?:   string;
   subjectType?: number;
-  // Season number → se, episode count → maxEp, resolutions show per-quality ep counts
   seasons?: Array<{
-    se:           number;
-    maxEp:        number;
-    allEp?:       string;
+    se:            number;
+    maxEp:         number;
+    allEp?:        string;
     resolutions?: Array<{ resolution: number; epNum: number }>;
   }>;
 }
