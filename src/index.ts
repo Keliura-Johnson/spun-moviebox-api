@@ -1,16 +1,16 @@
 // src/index.ts
 // Spün MovieBox Worker — main entry point.
 // Routes:
-//   GET  /                             — API info & route listing (public)
-//   GET  /health                       — health check (public)
-//   POST /search                       — { keyword, page?, perPage? }
-//   GET  /info/:subjectId              — subject detail
-//   GET  /season/:subjectId            — season/episode structure
-//   GET  /stream/:subjectId            — ?se=X&ep=Y  MP4 URLs for specific episode
-//   GET  /stream/:subjectId/all        — all episodes with streams (shorts/series bulk)
-//   GET  /download/:subjectId          — full pack grouped by season/episode
-//   GET  /home                         — homepage rows + subjects (Africa feed)
-//   GET  /home/subjects?opId=X         — subjects for a specific row
+//   GET  /                                  — API info & route listing (public)
+//   GET  /health                            — health check (public)
+//   POST /search                            — { keyword, page?, perPage? }
+//   GET  /info/:subjectId                   — subject detail
+//   GET  /season/:subjectId                 — season/episode structure
+//   GET  /stream/:subjectId                 — ?se=X&ep=Y  MP4 URLs for specific episode
+//   GET  /stream/:subjectId/all             — all episodes with streams (shorts/series bulk)
+//   GET  /download/:subjectId               — full pack grouped by season/episode
+//   GET  /home                              — homepage rows + subjects (Africa feed)
+//   GET  /home/subjects?opId=X              — subjects for a specific row
 //
 // /stream, /stream/all, and /download use the Android resource endpoint (7-host pool).
 // /home and /home/subjects use the H5 web endpoint (no HMAC signing required).
@@ -62,20 +62,17 @@ function err(message: string, status = 400): Response {
 
 // ─── Auth guard ───────────────────────────────────────────────────────────────
 
-// ─── Auth guard ───────────────────────────────────────────────────────────────
-
-// ─── Auth guard ───────────────────────────────────────────────────────────────
-
 function isAuthorized(_request: Request, _env: Env): boolean {
   return true;
 }
+
 // ─── Language name map ────────────────────────────────────────────────────────
 
 const LANGUAGE_NAMES: Record<string, string> = {
-  en: 'English',   fr: 'Français',  ar: 'Arabic',    zh: 'Chinese',
-  ru: 'Russian',   pt: 'Português', es: 'Spanish',   de: 'German',
-  ja: 'Japanese',  ko: 'Korean',    it: 'Italian',   sw: 'Kiswahili',
-  ha: 'Hausa',     ms: 'Malay',     bn: 'Bengali',   ur: 'Urdu',
+  en: 'English',   fr: 'Français',   ar: 'Arabic',    zh: 'Chinese',
+  ru: 'Russian',   pt: 'Português', es: 'Spanish',    de: 'German',
+  ja: 'Japanese',  ko: 'Korean',    it: 'Italian',    sw: 'Kiswahili',
+  ha: 'Hausa',     ms: 'Malay',     bn: 'Bengali',    ur: 'Urdu',
   pa: 'Punjabi',   fil: 'Filipino', id: 'Indonesian',
 };
 
@@ -226,9 +223,9 @@ async function mapResourceItem(
     : null;
 
   const captions = (item.extCaptions || []).map((cap) => ({
-    language:      cap.lanName || LANGUAGE_NAMES[cap.lan] || cap.lan,
+    language:     cap.lanName || LANGUAGE_NAMES[cap.lan] || cap.lan,
     language_code: cap.lan,
-    url:           cap.url,
+    url:          cap.url,
   }));
 
   return {
@@ -247,9 +244,6 @@ async function mapResourceItem(
 }
 
 // ─── H5 homepage fetcher ──────────────────────────────────────────────────────
-// No HMAC signing needed — the H5 API only requires standard browser headers.
-// The Africa/Lagos timezone pin in X-Client-Info is what produces the Africa
-// region feed (Nollywood, Anime Dub, Black Shows rows). Do not change it.
 
 const H5_HOSTS = [
   'https://netnaija.film',
@@ -286,9 +280,6 @@ interface H5HomeData {
 }
 
 async function fetchH5Home(nigeriaIp?: string): Promise<H5HomeData | null> {
-  // Use provided IP or fall back to a known stable MTN Nigeria IP.
-  // This is needed because Cloudflare edge nodes have non-Nigerian IPs and the
-  // upstream server returns a region-filtered feed based on the requester's IP.
   const forwardedIp = nigeriaIp || '197.210.65.1';
 
   for (const base of H5_HOSTS) {
@@ -297,7 +288,7 @@ async function fetchH5Home(nigeriaIp?: string): Promise<H5HomeData | null> {
         method: 'GET',
         headers: {
           'X-Client-Info':   '{"timezone":"Africa/Lagos"}',
-          'Accept':           'application/json',
+          'Accept':          'application/json',
           'User-Agent':       'Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0',
           'Referer':          `${base}/`,
           'X-Forwarded-For':  forwardedIp,
@@ -345,8 +336,8 @@ function normalizeH5Subject(item: H5Subject) {
     thumbnail:   item.cover?.thumbnail ?? '',
     country:     item.countryName ?? null,
     rating:      item.imdbRatingValue && item.imdbRatingValue !== '0'
-                   ? parseFloat(item.imdbRatingValue)
-                   : null,
+                    ? parseFloat(item.imdbRatingValue)
+                    : null,
     hasResource: item.hasResource ?? false,
     language:    item.language ?? null,
   };
@@ -360,17 +351,17 @@ function handleRoot(): Response {
     description: 'An unofficial REST API built by Spün for MovieBox — wrapping the MovieBox Android & H5 APIs with host pool fallback, request signing, and structured responses.',
     version:     '1.1.0',
     routes: [
-      { method: 'GET',  path: '/',                          auth: false,  description: 'API info and route listing' },
-      { method: 'GET',  path: '/health',                    auth: false,  description: 'Worker health check' },
-      { method: 'POST', path: '/search',                    auth: true,   description: 'Search for movies, TV shows, and shorts. Body: { keyword, page?, perPage? }' },
-      { method: 'GET',  path: '/info/:subjectId',           auth: true,   description: 'Get detail for a subject' },
-      { method: 'GET',  path: '/season/:subjectId',         auth: true,   description: 'Get season and episode structure for a TV show or shorts series' },
-      { method: 'GET',  path: '/stream/:subjectId',         auth: true,   description: 'Stream URLs for a specific episode. Params: se (season), ep (episode). Use se=0&ep=0 for movies.' },
-      { method: 'GET',  path: '/stream/:subjectId/all',     auth: true,   description: 'All stream URLs for all episodes grouped by episode. Useful for shorts and full series bulk fetch.' },
-      { method: 'GET',  path: '/download/:subjectId',       auth: true,   description: 'Full download pack grouped by season → episode → quality' },
-      { method: 'GET',  path: '/home',                      auth: true,   description: 'MovieBox homepage rows with subjects (Africa/Lagos feed)' },
-      { method: 'GET',  path: '/home/rows',                 auth: true,   description: 'All homepage row titles and opIds — use to discover rows before fetching subjects' },
-      { method: 'GET',  path: '/home/subjects?opId=X',      auth: true,   description: 'Subjects for a specific homepage row by opId' },
+      { method: 'GET',  path: '/',                             auth: false,  description: 'API info and route listing' },
+      { method: 'GET',  path: '/health',                       auth: false,  description: 'Worker health check' },
+      { method: 'POST', path: '/search',                       auth: true,   description: 'Search for movies, TV shows, and shorts. Body: { keyword, page?, perPage? }' },
+      { method: 'GET',  path: '/info/:subjectId',              auth: true,   description: 'Get detail for a subject' },
+      { method: 'GET',  path: '/season/:subjectId',            auth: true,   description: 'Get season and episode structure for a TV show or shorts series' },
+      { method: 'GET',  path: '/stream/:subjectId',            auth: true,   description: 'Stream URLs for a specific episode. Params: se (season), ep (episode). Use se=0&ep=0 for movies.' },
+      { method: 'GET',  path: '/stream/:subjectId/all',      auth: true,   description: 'All stream URLs for all episodes grouped by episode. Useful for shorts and full series bulk fetch.' },
+      { method: 'GET',  path: '/download/:subjectId',        auth: true,   description: 'Full download pack grouped by season → episode → quality' },
+      { method: 'GET',  path: '/home',                         auth: true,   description: 'MovieBox homepage rows with subjects (Africa/Lagos feed)' },
+      { method: 'GET',  path: '/home/rows',                    auth: true,   description: 'All homepage row titles and opIds — use to discover rows before fetching subjects' },
+      { method: 'GET',  path: '/home/subjects?opId=X',       auth: true,   description: 'Subjects for a specific homepage row by opId' },
     ],
   });
 }
@@ -389,9 +380,10 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
   const page    = Number(body.page ?? 1);
   const perPage = Number(body.perPage ?? 20);
 
+  // MovieBox mobile API expects 'word' instead of 'keyword'
   const data = await fetchWithHostPool<MBSearchData>(
     env, PATHS.search, 'POST', undefined,
-    { keyword, page, perPage, subjectType: 0 }
+    { word: keyword, page, perPage, subjectType: 0 }
   );
 
   if (!data) return json({ items: [], pager: null });
@@ -410,8 +402,8 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
       thumbnail:   item.cover?.thumbnail ?? null,
       country:     item.countryName ?? null,
       rating:      item.imdbRatingValue && item.imdbRatingValue !== '0'
-                     ? parseFloat(item.imdbRatingValue)
-                     : null,
+                    ? parseFloat(item.imdbRatingValue)
+                    : null,
       language:    item.language ?? null,
       type:        resolveSubjectType(item.subjectType),
     }));
@@ -452,8 +444,8 @@ async function handleInfo(subjectId: string, env: Env): Promise<Response> {
     poster:      data.cover?.url ?? null,
     country:     data.countryName ?? null,
     rating:      data.imdbRatingValue && data.imdbRatingValue !== '0'
-                   ? parseFloat(data.imdbRatingValue)
-                   : null,
+                    ? parseFloat(data.imdbRatingValue)
+                    : null,
     hasResource: data.hasResource ?? false,
     language:    data.language ?? null,
     staff:       staffList.map((s: any) => ({
@@ -478,11 +470,11 @@ async function handleSeason(subjectId: string, env: Env): Promise<Response> {
         : s.maxEp;
 
       return {
-        season:            s.se,
-        totalEpisode:      s.maxEp,
-        episodesAvailable: bestEpCount,
-        resolutions:       s.resolutions || [],
-        episodes:          Array.from({ length: s.maxEp }, (_, i) => ({
+        season:             s.se,
+        totalEpisode:       s.maxEp,
+        episodesAvailable:  bestEpCount,
+        resolutions:        s.resolutions || [],
+        episodes:           Array.from({ length: s.maxEp }, (_, i) => ({
           episode:     i + 1,
           title:       null,
           releaseDate: null,
@@ -491,10 +483,6 @@ async function handleSeason(subjectId: string, env: Env): Promise<Response> {
     }),
   });
 }
-
-// GET /stream/:subjectId?se=X&ep=Y
-// Returns MP4 URLs for a specific episode, deduplicated by quality.
-// Use se=0&ep=0 for movies (returns full pack as one item per quality).
 
 async function handleStream(subjectId: string, se: number, ep: number, env: Env): Promise<Response> {
   const pack = await fetchResourcePack(env, subjectId);
@@ -509,7 +497,6 @@ async function handleStream(subjectId: string, se: number, ep: number, env: Env)
     items = filtered;
   }
 
-  // Deduplicate by quality — keep first (highest resolution sort already applied)
   const seenQualities = new Set<string>();
   const streams = items
     .filter((item) => {
@@ -525,16 +512,10 @@ async function handleStream(subjectId: string, se: number, ep: number, env: Env)
   return json({ streams: resolvedStreams, total: resolvedStreams.length });
 }
 
-// GET /stream/:subjectId/all
-// Returns ALL stream URLs grouped by season → episode.
-// Works for both shorts (se=1, flat episode list) and full TV series.
-// No se/ep filtering — always returns the complete pack.
-
 async function handleStreamAll(subjectId: string, env: Env): Promise<Response> {
   const pack = await fetchResourcePack(env, subjectId);
   if (!pack) return err('No streams available', 404);
 
-  // Group by season (se) → episode (ep) — deduplicate by quality within each episode
   const seasonMap = new Map<number, Map<number, Awaited<ReturnType<typeof mapResourceItem>>[]>>();
 
   for (const item of pack) {
@@ -568,9 +549,6 @@ async function handleStreamAll(subjectId: string, env: Env): Promise<Response> {
 
   return json({ seasons, total_seasons: seasons.length });
 }
-
-// GET /download/:subjectId
-// Returns full pack grouped by season → episodes → qualities.
 
 async function handleDownload(subjectId: string, env: Env): Promise<Response> {
   const pack = await fetchResourcePack(env, subjectId);
@@ -616,10 +594,6 @@ async function handleDownload(subjectId: string, env: Env): Promise<Response> {
   return json({ seasons, total_seasons: seasons.length });
 }
 
-// GET /home/rows
-// Returns all homepage row titles and opIds — lightweight discovery endpoint.
-// Use this to find opIds before calling /home/subjects.
-
 async function handleHomeRows(env: Env): Promise<Response> {
   const data = await fetchH5Home(env.NIGERIA_IP);
   if (!data) return err('Failed to fetch homepage', 502);
@@ -631,9 +605,6 @@ async function handleHomeRows(env: Env): Promise<Response> {
 
   return json({ total: rows.length, rows });
 }
-
-// GET /home
-// Returns all homepage rows with their subjects (Africa/Lagos feed).
 
 async function handleHome(env: Env): Promise<Response> {
   const data = await fetchH5Home(env.NIGERIA_IP);
@@ -651,9 +622,6 @@ async function handleHome(env: Env): Promise<Response> {
 
   return json({ total: rows.length, rows });
 }
-
-// GET /home/subjects?opId=X
-// Returns subjects for a specific homepage row.
 
 async function handleHomeSubjects(opId: string, env: Env): Promise<Response> {
   const data = await fetchH5Home(env.NIGERIA_IP);
@@ -691,7 +659,6 @@ export default {
     const url  = new URL(request.url);
     const path = url.pathname;
 
-    // Public routes — no auth required
     if (path === '/' && request.method === 'GET') {
       return handleRoot();
     }
@@ -704,30 +671,25 @@ export default {
       return err('Unauthorized', 401);
     }
 
-    // POST /search
     if (path === '/search' && request.method === 'POST') {
       return handleSearch(request, env);
     }
 
-    // GET /info/:subjectId
     const infoMatch = path.match(/^\/info\/([^/]+)$/);
     if (infoMatch && request.method === 'GET') {
       return handleInfo(infoMatch[1], env);
     }
 
-    // GET /season/:subjectId
     const seasonMatch = path.match(/^\/season\/([^/]+)$/);
     if (seasonMatch && request.method === 'GET') {
       return handleSeason(seasonMatch[1], env);
     }
 
-    // GET /stream/:subjectId/all — must be checked before /stream/:subjectId
     const streamAllMatch = path.match(/^\/stream\/([^/]+)\/all$/);
     if (streamAllMatch && request.method === 'GET') {
       return handleStreamAll(streamAllMatch[1], env);
     }
 
-    // GET /stream/:subjectId?se=X&ep=Y
     const streamMatch = path.match(/^\/stream\/([^/]+)$/);
     if (streamMatch && request.method === 'GET') {
       const se = parseInt(url.searchParams.get('se') ?? '0');
@@ -735,25 +697,21 @@ export default {
       return handleStream(streamMatch[1], se, ep, env);
     }
 
-    // GET /download/:subjectId
     const downloadMatch = path.match(/^\/download\/([^/]+)$/);
     if (downloadMatch && request.method === 'GET') {
       return handleDownload(downloadMatch[1], env);
     }
 
-    // GET /home/rows — must be checked before /home
     if (path === '/home/rows' && request.method === 'GET') {
       return handleHomeRows(env);
     }
 
-    // GET /home/subjects?opId=X — must be checked before /home
     if (path === '/home/subjects' && request.method === 'GET') {
       const opId = url.searchParams.get('opId');
       if (!opId) return err('opId is required');
       return handleHomeSubjects(opId, env);
     }
 
-    // GET /home
     if (path === '/home' && request.method === 'GET') {
       return handleHome(env);
     }
