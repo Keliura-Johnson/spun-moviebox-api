@@ -234,10 +234,11 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
   const page = Number(body.page ?? url.searchParams.get('page') ?? 1);
   const perPage = Number(body.perPage ?? url.searchParams.get('perPage') ?? 20);
 
+  // FIX: Pass search parameters in the JSON BODY (5th argument), not query params (4th argument)
   const data = await fetchWithHostPool<MBSearchData>(
     env, PATHS.search, 'POST',
-    { word: searchQuery, page, perPage, subjectType: 0 },
-    undefined
+    undefined, // no query params
+    { word: searchQuery, page, perPage, subjectType: 0 } // JSON body payload
   );
 
   if (!data) return json({ items: [], pager: null });
