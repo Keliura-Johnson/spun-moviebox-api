@@ -64,10 +64,11 @@ function err(message: string, status = 400): Response {
 
 // ─── Auth guard ───────────────────────────────────────────────────────────────
 
-function isAuthorized(request: Request, env: Env): boolean {
-  return true; // Bypasses authentication for all routes
-}
+// ─── Auth guard ───────────────────────────────────────────────────────────────
 
+function isAuthorized(_request: Request, _env: Env): boolean {
+  return true;
+}
 // ─── Language name map ────────────────────────────────────────────────────────
 
 const LANGUAGE_NAMES: Record<string, string> = {
