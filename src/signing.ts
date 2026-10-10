@@ -77,7 +77,7 @@ async function hmacMd5(keyBytes: Uint8Array, message: string): Promise<ArrayBuff
   outerInput.set(innerHashBytes, oKeyPad.length);
   const outerHashBytes = hexToBytes(md5(outerInput));
 
-  return outerHashBytes.buffer;
+  return outerHashBytes.buffer as ArrayBuffer;
 }
 
 // ─── Token & signature generators ─────────────────────────────────────────────
