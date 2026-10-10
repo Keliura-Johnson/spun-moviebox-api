@@ -228,17 +228,17 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
   } catch {}
 
   const url = new URL(request.url);
-  const searchQuery = (body.keyword ?? body.word ?? url.searchParams.get('word') ?? url.searchParams.get('keyword')) as string;
-  if (!searchQuery?.trim()) return err('keyword is required');
+  const keyword = (body.keyword ?? body.word ?? url.searchParams.get('keyword') ?? url.searchParams.get('word')) as string;
+  if (!keyword?.trim()) return err('keyword is required');
 
   const page = Number(body.page ?? url.searchParams.get('page') ?? 1);
   const perPage = Number(body.perPage ?? url.searchParams.get('perPage') ?? 20);
 
-  // Send search parameters as query parameters (4th argument) as required by MovieBox mobile search
+  // Send official MovieBox search payload: { keyword, type, page, perPage } in JSON body
   const data = await fetchWithHostPool<MBSearchData>(
     env, PATHS.search, 'POST',
-    { word: searchQuery, page, perPage, subjectType: 0 },
-    undefined
+    undefined,
+    { keyword: keyword.trim(), type: 0, page, perPage }
   );
 
   if (!data) return json({ items: [], pager: null });
