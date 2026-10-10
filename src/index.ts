@@ -213,88 +213,6 @@ async function mapResourceItem(
   };
 }
 
-const H5_HOSTS = [
-  'https://netnaija.film',
-  'https://h5.aoneroom.com',
-  'https://moviebox.pk',
-];
-
-const H5_PATH = '/wefeed-h5-bff/web/home';
-
-interface H5Subject {
-  subjectId:        string;
-  subjectType:      number;
-  title:            string;
-  description?:     string;
-  releaseDate?:     string;
-  duration?:        number;
-  genre?:           string;
-  cover?:           { url?: string; thumbnail?: string };
-  countryName?:     string;
-  imdbRatingValue?: string;
-  hasResource?:     boolean;
-  language?:        string;
-}
-
-interface H5Row {
-  title:    string;
-  opId:     string;
-  type:     string;
-  subjects: H5Subject[];
-}
-
-interface H5HomeData {
-  operatingList: H5Row[];
-}
-
-async function fetchH5Home(nigeriaIp?: string): Promise<H5HomeData | null> {
-  const forwardedIp = nigeriaIp || '197.210.65.1';
-
-  for (const base of H5_HOSTS) {
-    try {
-      const response = await fetch(`${base}${H5_PATH}`, {
-        method: 'GET',
-        headers: {
-          'X-Client-Info':   '{"timezone":"Africa/Lagos"}',
-          'Accept':          'application/json',
-          'User-Agent':       'Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0',
-          'Referer':          `${base}/`,
-          'X-Forwarded-For':  forwardedIp,
-        },
-        signal: AbortSignal.timeout(12000),
-      });
-
-      if (!response.ok) continue;
-
-      const data = await response.json() as { code: number; data?: H5HomeData };
-      if (data.code === 0 && data.data) return data.data;
-    } catch {}
-  }
-  return null;
-}
-
-function normalizeH5Subject(item: H5Subject) {
-  const rawDuration = item.duration;
-  const runtimeMinutes = rawDuration && rawDuration > 0 ? Math.round(rawDuration / 60) : null;
-
-  return {
-    subjectId:   item.subjectId,
-    subjectType: item.subjectType,
-    type:        resolveSubjectType(item.subjectType),
-    title:       item.title,
-    description: item.description ?? '',
-    releaseDate: item.releaseDate ?? null,
-    runtime:     runtimeMinutes,
-    genre:       item.genre ?? null,
-    poster:      item.cover?.url ?? null,
-    thumbnail:   item.cover?.thumbnail ?? '',
-    country:     item.countryName ?? null,
-    rating:      item.imdbRatingValue && item.imdbRatingValue !== '0' ? parseFloat(item.imdbRatingValue) : null,
-    hasResource: item.hasResource ?? false,
-    language:    item.language ?? null,
-  };
-}
-
 function handleRoot(): Response {
   return json({
     name:        'Spün MovieBox API',
@@ -316,11 +234,10 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
   const page = Number(body.page ?? url.searchParams.get('page') ?? 1);
   const perPage = Number(body.perPage ?? url.searchParams.get('perPage') ?? 20);
 
-  // Send search parameters via query string params instead of JSON payload
   const data = await fetchWithHostPool<MBSearchData>(
     env, PATHS.search, 'POST',
     { word: searchQuery, page, perPage, subjectType: 0 },
-    null
+    undefined
   );
 
   if (!data) return json({ items: [], pager: null });
