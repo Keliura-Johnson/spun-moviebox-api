@@ -41,7 +41,9 @@ async function md5Hex(data: string | Uint8Array): Promise<string> {
 // ─── HMAC-MD5 via js-md5 ───────────────────────────────────────────────────────
 
 async function hmacMd5(keyBytes: Uint8Array, message: string): Promise<ArrayBuffer> {
-  return md5.hmac.arrayBuffer(keyBytes, message);
+  // Use md5.hmac.array() for 100% bundler compatibility and convert to ArrayBuffer
+  const bytes = md5.hmac.array(keyBytes, message);
+  return new Uint8Array(bytes).buffer;
 }
 
 // ─── Token & signature generators ─────────────────────────────────────────────
