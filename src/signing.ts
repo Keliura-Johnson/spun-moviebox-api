@@ -1,6 +1,7 @@
 // src/signing.ts
 // MovieBox Mobile API v3 request signing — updated for Vercel Serverless Runtime compatibility
 
+// @ts-ignore
 import md5 from 'js-md5';
 
 const SECRET_KEY_B64 = '76iRl07s0xSN9jqmEWAt79EBJZulIQIsV64FZr2O';
