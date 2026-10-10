@@ -1,31 +1,7 @@
 // src/signing.ts
-// MovieBox Mobile API v3 request signing — Web Crypto API (Cloudflare Workers compatible)
-// Ports the Python library's HMAC-MD5 signing logic to the Workers runtime.
-// No Node.js crypto — uses SubtleCrypto throughout.
-//
-// ─── 2026-06-29 fix ──────────────────────────────────────────────────────────
-// Every request to the Android mobile pool started failing with HTTP 440/530
-// across all 7 hosts uniformly. Confirmed via wrangler tail — not a transient
-// outage. Root cause, confirmed by live testing against the real API: the
-// HMAC-MD5 signing logic below was NEVER broken — what was missing is a
-// bearer auth token. MovieBox's mobile API now requires every signed request
-// to also carry `Authorization: Bearer {token}`, where the token is obtained
-// via a one-time bootstrap call (any GET against the API, e.g. the homepage
-// tab-operating endpoint) whose response includes an `x-user` header:
-//   x-user: {"token": "...", "userId": "...", "userType": 0}
-// That token is then reused as the Authorization header on every subsequent
-// signed request, and is itself a JWT with a long (~90 day) lifetime.
-//
-// This was confirmed end-to-end with real, live requests before being wired
-// in here: a hand-signed bootstrap call returned a valid x-user token, and
-// that token was then used to sign and authorize a real /search call which
-// returned genuine MovieBox search results.
-//
-// The token is cached in Workers KV (not module-scope memory) because we
-// confirmed via wrangler tail in a separate but related fix (the H5 worker's
-// session cache) that Cloudflare does not reliably reuse the same isolate
-// across requests — in-memory caching would mean every request re-bootstraps,
-// which both adds latency and risks tripping MovieBox's own rate limits.
+// MovieBox Mobile API v3 request signing — updated for Vercel Serverless Runtime compatibility
+
+import md5 from 'js-md5';
 
 const SECRET_KEY_B64 = '76iRl07s0xSN9jqmEWAt79EBJZulIQIsV64FZr2O';
 const SIGNATURE_BODY_MAX_BYTES = 102_400;
@@ -52,28 +28,20 @@ function b64Encode(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-// ─── MD5 via SubtleCrypto ──────────────────────────────────────────────────────
-// SubtleCrypto supports MD5 in Cloudflare Workers (non-browser context)
+// ─── MD5 via js-md5 ────────────────────────────────────────────────────────────
 
 async function md5Hex(data: string | Uint8Array): Promise<string> {
-  const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-  const hashBuffer = await crypto.subtle.digest('MD5', bytes);
-  return Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
+  if (data instanceof Uint8Array) {
+    return md5(data);
+  }
+  return md5(data);
 }
 
-// ─── HMAC-MD5 ─────────────────────────────────────────────────────────────────
+// ─── HMAC-MD5 via js-md5 ───────────────────────────────────────────────────────
 
 async function hmacMd5(keyBytes: Uint8Array, message: string): Promise<ArrayBuffer> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyBytes,
-    { name: 'HMAC', hash: 'MD5' },
-    false,
-    ['sign']
-  );
-  return crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message));
+  // js-md5 supports hmac directly via md5.hmac.arrayBuffer(key, message)
+  return md5.hmac.arrayBuffer(keyBytes, message);
 }
 
 // ─── Token & signature generators ─────────────────────────────────────────────
@@ -141,20 +109,12 @@ export async function generateSignature(
 
 export interface SigningEnv {
   MOVIEBOX_SESSION_KV: KVNamespace;
-  // ─── 2026-08-13 relay fix ──────────────────────────────────────────────
-  // MovieBox rejects requests from Cloudflare Workers' egress IPs at the
-  // transport layer (HTTP 440/530, before app logic runs) — confirmed via
-  // side-by-side testing: identical signed requests succeed from a
-  // non-Cloudflare IP and fail uniformly across all 7 hosts from the Worker.
-  // All outbound calls now route through a small Render web service that
-  // re-issues the already-signed request from a different IP. See
-  // moviebox.ts's attemptHostPool and spun-moviebox-relay/README.md.
   RELAY_URL: string;
   RELAY_SECRET: string;
 }
 
 const KV_TOKEN_KEY = 'mobile_auth_token';
-const KV_TTL_SECONDS = 60 * 60 * 24; // 24h backstop, JWT itself is long-lived
+const KV_TTL_SECONDS = 60 * 60 * 24; 
 const EXPIRY_SAFETY_MARGIN_SECONDS = 300;
 
 interface CachedToken {
@@ -162,9 +122,6 @@ interface CachedToken {
   expiresAtSeconds: number;
 }
 
-// Guards against duplicate concurrent bootstraps WITHIN a single isolate —
-// does not replace KV, just avoids a thundering herd if several requests on
-// the same isolate all find a stale/missing KV entry at once.
 let _bootstrapPromise: Promise<string> | null = null;
 
 function decodeJwtExpSeconds(jwt: string): number | null {
@@ -205,17 +162,6 @@ function isExpiringSoon(cached: CachedToken): boolean {
   return nowSeconds >= cached.expiresAtSeconds - EXPIRY_SAFETY_MARGIN_SECONDS;
 }
 
-/**
- * Performs the one-time bootstrap call needed to obtain an auth token: any
- * signed GET request against the mobile API works for this, since the token
- * arrives via the `x-user` response header on every response, not from a
- * dedicated endpoint. We use the lightweight homepage tab-operating call.
- *
- * `signedFetch` is injected (rather than imported) to avoid a circular
- * dependency between this module and moviebox.ts's host-pool fetch logic —
- * moviebox.ts already knows how to try hosts in order and handle failures,
- * so bootstrap reuses that instead of duplicating host-pool logic here.
- */
 export async function bootstrapAuthToken(
   env: SigningEnv,
   signedFetch: () => Promise<string | null>
@@ -241,10 +187,6 @@ export async function bootstrapAuthToken(
   return _bootstrapPromise;
 }
 
-/**
- * Returns a valid cached auth token from KV, or null if none exists / it's
- * expiring soon and needs a fresh bootstrap.
- */
 export async function getCachedAuthToken(env: SigningEnv): Promise<string | null> {
   const cached = await readTokenFromKv(env.MOVIEBOX_SESSION_KV);
   if (cached && !isExpiringSoon(cached)) {
@@ -253,11 +195,6 @@ export async function getCachedAuthToken(env: SigningEnv): Promise<string | null
   return null;
 }
 
-/**
- * Forces the next getCachedAuthToken() call to miss, triggering a fresh
- * bootstrap. Use when a request gets rejected despite the cache believing
- * the token is still valid (e.g. MovieBox revoked it server-side early).
- */
 export async function invalidateAuthToken(env: SigningEnv): Promise<void> {
   try {
     await env.MOVIEBOX_SESSION_KV.delete(KV_TOKEN_KEY);
