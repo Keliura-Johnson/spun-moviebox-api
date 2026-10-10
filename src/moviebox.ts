@@ -39,7 +39,7 @@ const USER_AGENT =
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
 export const PATHS = {
-  search:       '/wefeed-mobile-bff/subject-api/search',
+  search:       '/wefeed-mobile-bff/subject-api/search/v2',
   get:          '/wefeed-mobile-bff/subject-api/get',
   seasonInfo:   '/wefeed-mobile-bff/subject-api/season-info',
   resource:     '/wefeed-mobile-bff/subject-api/resource',
@@ -393,9 +393,9 @@ export interface MBSeasonData {
   subjectId?:   string;
   subjectType?: number;
   seasons?: Array<{
-    se:            number;
-    maxEp:         number;
-    allEp?:        string;
+    se:             number;
+    maxEp:          number;
+    allEp?:         string;
     resolutions?: Array<{ resolution: number; epNum: number }>;
   }>;
 }
