@@ -3,7 +3,7 @@
 // Routes:
 //   GET  /                                  — API info & route listing (public)
 //   GET  /health                            — health check (public)
-//   POST /search                            — { keyword, page?, perPage? }
+//   POST /search                            — { keyword | word, page?, perPage? }
 //   GET  /info/:subjectId                   — subject detail
 //   GET  /season/:subjectId                 — season/episode structure
 //   GET  /stream/:subjectId                 — ?se=X&ep=Y  MP4 URLs for specific episode
@@ -353,7 +353,7 @@ function handleRoot(): Response {
     routes: [
       { method: 'GET',  path: '/',                             auth: false,  description: 'API info and route listing' },
       { method: 'GET',  path: '/health',                       auth: false,  description: 'Worker health check' },
-      { method: 'POST', path: '/search',                       auth: true,   description: 'Search for movies, TV shows, and shorts. Body: { keyword, page?, perPage? }' },
+      { method: 'POST', path: '/search',                       auth: true,   description: 'Search for movies, TV shows, and shorts. Body: { keyword | word, page?, perPage? }' },
       { method: 'GET',  path: '/info/:subjectId',              auth: true,   description: 'Get detail for a subject' },
       { method: 'GET',  path: '/season/:subjectId',            auth: true,   description: 'Get season and episode structure for a TV show or shorts series' },
       { method: 'GET',  path: '/stream/:subjectId',            auth: true,   description: 'Stream URLs for a specific episode. Params: se (season), ep (episode). Use se=0&ep=0 for movies.' },
@@ -374,16 +374,17 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
     return err('Invalid JSON body');
   }
 
-  const keyword = body.keyword as string;
-  if (!keyword?.trim()) return err('keyword is required');
+  // Accept either 'keyword' or 'word' from the client request
+  const searchQuery = (body.keyword ?? body.word) as string;
+  if (!searchQuery?.trim()) return err('keyword is required');
 
   const page    = Number(body.page ?? 1);
   const perPage = Number(body.perPage ?? 20);
 
-  // MovieBox mobile API expects 'word' instead of 'keyword'
+  // Send 'word' to MovieBox's mobile API backend
   const data = await fetchWithHostPool<MBSearchData>(
     env, PATHS.search, 'POST', undefined,
-    { word: keyword, page, perPage, subjectType: 0 }
+    { word: searchQuery, page, perPage, subjectType: 0 }
   );
 
   if (!data) return json({ items: [], pager: null });
