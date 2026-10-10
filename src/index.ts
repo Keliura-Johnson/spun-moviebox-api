@@ -228,17 +228,20 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
   } catch {}
 
   const url = new URL(request.url);
-  const keyword = (body.keyword ?? body.word ?? url.searchParams.get('keyword') ?? url.searchParams.get('word')) as string;
-  if (!keyword?.trim()) return err('keyword is required');
+  const rawQuery = (body.keyword ?? body.word ?? url.searchParams.get('keyword') ?? url.searchParams.get('word')) as string;
+  if (!rawQuery?.trim()) return err('keyword is required');
+
+  // Strip release years like "(2015)" or "2015" from titles so search matches cleanly
+  const searchQuery = rawQuery.replace(/\s*\(\d{4}\)|\s+\d{4}$/, '').trim();
 
   const page = Number(body.page ?? url.searchParams.get('page') ?? 1);
   const perPage = Number(body.perPage ?? url.searchParams.get('perPage') ?? 20);
 
-  // Send official MovieBox search payload: { keyword, type, page, perPage } in JSON body
+  // Send search payload to search/v2 endpoint inside JSON Body
   const data = await fetchWithHostPool<MBSearchData>(
     env, PATHS.search, 'POST',
     undefined,
-    { keyword: keyword.trim(), type: 0, page, perPage }
+    { keyword: searchQuery, subjectType: 0, page, perPage }
   );
 
   if (!data) return json({ items: [], pager: null });
