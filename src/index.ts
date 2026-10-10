@@ -1,20 +1,5 @@
 // src/index.ts
 // Spün MovieBox Worker — main entry point.
-// Routes:
-//   GET  /                                  — API info & route listing (public)
-//   GET  /health                            — health check (public)
-//   POST /search                            — { keyword | word, page?, perPage? }
-//   GET  /info/:subjectId                   — subject detail
-//   GET  /season/:subjectId                 — season/episode structure
-//   GET  /stream/:subjectId                 — ?se=X&ep=Y  MP4 URLs for specific episode
-//   GET  /stream/:subjectId/all             — all episodes with streams (shorts/series bulk)
-//   GET  /download/:subjectId               — full pack grouped by season/episode
-//   GET  /home                              — homepage rows + subjects (Africa feed)
-//   GET  /home/subjects?opId=X              — subjects for a specific row
-//
-// /stream, /stream/all, and /download use the Android resource endpoint (7-host pool).
-// /home and /home/subjects use the H5 web endpoint (no HMAC signing required).
-// All routes except / and /health require X-Worker-Secret header.
 
 import {
   fetchWithHostPool,
@@ -38,9 +23,6 @@ function resolveSubjectType(subjectType: number): 'movie' | 'tv' | 'shorts' {
 
 export interface Env extends SigningEnv {
   MOVIEBOX_SECRET: string;
-  // Nigerian IP for X-Forwarded-For — ensures the H5 upstream returns the full
-  // Africa region feed (35 rows). Cloudflare edge IPs get a truncated feed (30 rows).
-  // Set in wrangler.toml or Cloudflare dashboard. Falls back to a known MTN Nigeria IP.
   NIGERIA_IP?: string;
 }
 
@@ -76,13 +58,6 @@ const LANGUAGE_NAMES: Record<string, string> = {
   pa: 'Punjabi',   fil: 'Filipino', id: 'Indonesian',
 };
 
-// ─── Shared: fetch full resource pack (all resolutions, all pages) ───────────
-// MovieBox's resource endpoint is resolution-filtered — omitting the resolution
-// param returns only one quality. We loop over every known resolution and
-// paginate each until hasMore=false, deduplicating by resourceId across passes.
-// se=0&ep=0 is the magic value that returns all episodes in bulk.
-// perPage must be 10 — server silently rejects higher values with code !== 0.
-
 const RESOLUTIONS = [360, 480, 720, 1080];
 
 async function fetchResourcePack(env: Env, subjectId: string): Promise<MBResourceItem[] | null> {
@@ -110,9 +85,6 @@ async function fetchResourcePack(env: Env, subjectId: string): Promise<MBResourc
       if (!data.pager?.hasMore) break;
 
       page++;
-
-      // Safety cap — 100 pages x 10 items = 1000 items per resolution,
-      // enough for the longest series on MovieBox (e.g. One Piece ~1100 eps).
       if (page > 100) break;
     }
   }
@@ -121,8 +93,6 @@ async function fetchResourcePack(env: Env, subjectId: string): Promise<MBResourc
 
   return allItems.sort((a, b) => b.resolution - a.resolution);
 }
-
-// ─── Shared: map a resource item to a stream/download object ─────────────────
 
 function base64UrlEncode(value: string): string {
   const bytes = new TextEncoder().encode(value);
@@ -243,8 +213,6 @@ async function mapResourceItem(
   };
 }
 
-// ─── H5 homepage fetcher ──────────────────────────────────────────────────────
-
 const H5_HOSTS = [
   'https://netnaija.film',
   'https://h5.aoneroom.com',
@@ -296,32 +264,18 @@ async function fetchH5Home(nigeriaIp?: string): Promise<H5HomeData | null> {
         signal: AbortSignal.timeout(12000),
       });
 
-      if (!response.ok) {
-        console.warn(`[H5] Host ${base} returned ${response.status} — trying next`);
-        continue;
-      }
+      if (!response.ok) continue;
 
       const data = await response.json() as { code: number; data?: H5HomeData };
-
-      if (data.code === 0 && data.data) {
-        return data.data;
-      }
-
-      console.warn(`[H5] Host ${base} returned API code ${data.code} — trying next`);
-    } catch (e) {
-      console.warn(`[H5] Host ${base} failed: ${e} — trying next`);
-    }
+      if (data.code === 0 && data.data) return data.data;
+    } catch {}
   }
-
-  console.error('[H5] All hosts exhausted');
   return null;
 }
 
 function normalizeH5Subject(item: H5Subject) {
   const rawDuration = item.duration;
-  const runtimeMinutes = rawDuration && rawDuration > 0
-    ? Math.round(rawDuration / 60)
-    : null;
+  const runtimeMinutes = rawDuration && rawDuration > 0 ? Math.round(rawDuration / 60) : null;
 
   return {
     subjectId:   item.subjectId,
@@ -335,56 +289,38 @@ function normalizeH5Subject(item: H5Subject) {
     poster:      item.cover?.url ?? null,
     thumbnail:   item.cover?.thumbnail ?? '',
     country:     item.countryName ?? null,
-    rating:      item.imdbRatingValue && item.imdbRatingValue !== '0'
-                    ? parseFloat(item.imdbRatingValue)
-                    : null,
+    rating:      item.imdbRatingValue && item.imdbRatingValue !== '0' ? parseFloat(item.imdbRatingValue) : null,
     hasResource: item.hasResource ?? false,
     language:    item.language ?? null,
   };
 }
 
-// ─── Handlers ─────────────────────────────────────────────────────────────────
-
 function handleRoot(): Response {
   return json({
     name:        'Spün MovieBox API',
-    description: 'An unofficial REST API built by Spün for MovieBox — wrapping the MovieBox Android & H5 APIs with host pool fallback, request signing, and structured responses.',
     version:     '1.1.0',
-    routes: [
-      { method: 'GET',  path: '/',                             auth: false,  description: 'API info and route listing' },
-      { method: 'GET',  path: '/health',                       auth: false,  description: 'Worker health check' },
-      { method: 'POST', path: '/search',                       auth: true,   description: 'Search for movies, TV shows, and shorts. Body: { keyword | word, page?, perPage? }' },
-      { method: 'GET',  path: '/info/:subjectId',              auth: true,   description: 'Get detail for a subject' },
-      { method: 'GET',  path: '/season/:subjectId',            auth: true,   description: 'Get season and episode structure for a TV show or shorts series' },
-      { method: 'GET',  path: '/stream/:subjectId',            auth: true,   description: 'Stream URLs for a specific episode. Params: se (season), ep (episode). Use se=0&ep=0 for movies.' },
-      { method: 'GET',  path: '/stream/:subjectId/all',      auth: true,   description: 'All stream URLs for all episodes grouped by episode. Useful for shorts and full series bulk fetch.' },
-      { method: 'GET',  path: '/download/:subjectId',        auth: true,   description: 'Full download pack grouped by season → episode → quality' },
-      { method: 'GET',  path: '/home',                         auth: true,   description: 'MovieBox homepage rows with subjects (Africa/Lagos feed)' },
-      { method: 'GET',  path: '/home/rows',                    auth: true,   description: 'All homepage row titles and opIds — use to discover rows before fetching subjects' },
-      { method: 'GET',  path: '/home/subjects?opId=X',       auth: true,   description: 'Subjects for a specific homepage row by opId' },
-    ],
+    description: 'Spün MovieBox Worker wrapper',
   });
 }
 
 async function handleSearch(request: Request, env: Env): Promise<Response> {
-  let body: Record<string, unknown>;
+  let body: Record<string, unknown> = {};
   try {
     body = await request.json() as Record<string, unknown>;
-  } catch {
-    return err('Invalid JSON body');
-  }
+  } catch {}
 
-  // Accept either 'keyword' or 'word' from the client request
-  const searchQuery = (body.keyword ?? body.word) as string;
+  const url = new URL(request.url);
+  const searchQuery = (body.keyword ?? body.word ?? url.searchParams.get('word') ?? url.searchParams.get('keyword')) as string;
   if (!searchQuery?.trim()) return err('keyword is required');
 
-  const page    = Number(body.page ?? 1);
-  const perPage = Number(body.perPage ?? 20);
+  const page = Number(body.page ?? url.searchParams.get('page') ?? 1);
+  const perPage = Number(body.perPage ?? url.searchParams.get('perPage') ?? 20);
 
-  // Send 'word' to MovieBox's mobile API backend
+  // Send search parameters via query string params instead of JSON payload
   const data = await fetchWithHostPool<MBSearchData>(
-    env, PATHS.search, 'POST', undefined,
-    { word: searchQuery, page, perPage, subjectType: 0 }
+    env, PATHS.search, 'POST',
+    { word: searchQuery, page, perPage, subjectType: 0 },
+    null
   );
 
   if (!data) return json({ items: [], pager: null });
@@ -402,9 +338,7 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
       poster:      item.cover?.url ?? null,
       thumbnail:   item.cover?.thumbnail ?? null,
       country:     item.countryName ?? null,
-      rating:      item.imdbRatingValue && item.imdbRatingValue !== '0'
-                    ? parseFloat(item.imdbRatingValue)
-                    : null,
+      rating:      item.imdbRatingValue && item.imdbRatingValue !== '0' ? parseFloat(item.imdbRatingValue) : null,
       language:    item.language ?? null,
       type:        resolveSubjectType(item.subjectType),
     }));
@@ -413,25 +347,8 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
 }
 
 async function handleInfo(subjectId: string, env: Env): Promise<Response> {
-  const data = await fetchWithHostPool<MBDetailData>(
-    env, PATHS.get, 'GET', { subjectId }
-  );
-
+  const data = await fetchWithHostPool<MBDetailData>(env, PATHS.get, 'GET', { subjectId });
   if (!data?.subjectId) return err('Not found', 404);
-
-  const staffList = (data as any).staffList || [];
-
-  const rawDuration = (data as any).duration;
-  let runtimeMinutes: number | null = null;
-  if (typeof rawDuration === 'number') {
-    runtimeMinutes = Math.round(rawDuration / 60);
-  } else if (typeof rawDuration === 'string') {
-    const hMatch = rawDuration.match(/(\d+)h/);
-    const mMatch = rawDuration.match(/(\d+)m/);
-    const h = hMatch ? parseInt(hMatch[1]) : 0;
-    const m = mMatch ? parseInt(mMatch[1]) : 0;
-    runtimeMinutes = h * 60 + m || null;
-  }
 
   return json({
     subjectId:   data.subjectId,
@@ -440,48 +357,27 @@ async function handleInfo(subjectId: string, env: Env): Promise<Response> {
     title:       data.title,
     description: data.description ?? '',
     releaseDate: data.releaseDate ?? null,
-    runtime:     runtimeMinutes,
     genre:       data.genre ?? null,
     poster:      data.cover?.url ?? null,
     country:     data.countryName ?? null,
-    rating:      data.imdbRatingValue && data.imdbRatingValue !== '0'
-                    ? parseFloat(data.imdbRatingValue)
-                    : null,
+    rating:      data.imdbRatingValue && data.imdbRatingValue !== '0' ? parseFloat(data.imdbRatingValue) : null,
     hasResource: data.hasResource ?? false,
     language:    data.language ?? null,
-    staff:       staffList.map((s: any) => ({
-      name:   s.name,
-      role:   s.role,
-      avatar: s.avatar?.url ?? null,
-    })),
   });
 }
 
 async function handleSeason(subjectId: string, env: Env): Promise<Response> {
-  const data = await fetchWithHostPool<MBSeasonData>(
-    env, PATHS.seasonInfo, 'GET', { subjectId }
-  );
-
+  const data = await fetchWithHostPool<MBSeasonData>(env, PATHS.seasonInfo, 'GET', { subjectId });
   if (!data?.seasons?.length) return json({ seasons: [] });
 
   return json({
-    seasons: data.seasons.map((s) => {
-      const bestEpCount = s.resolutions?.length
-        ? Math.max(...s.resolutions.map((r) => r.epNum))
-        : s.maxEp;
-
-      return {
-        season:             s.se,
-        totalEpisode:       s.maxEp,
-        episodesAvailable:  bestEpCount,
-        resolutions:        s.resolutions || [],
-        episodes:           Array.from({ length: s.maxEp }, (_, i) => ({
-          episode:     i + 1,
-          title:       null,
-          releaseDate: null,
-        })),
-      };
-    }),
+    seasons: data.seasons.map((s) => ({
+      season:             s.se,
+      totalEpisode:       s.maxEp,
+      episodesAvailable:  s.resolutions?.length ? Math.max(...s.resolutions.map((r) => r.epNum)) : s.maxEp,
+      resolutions:        s.resolutions || [],
+      episodes:           Array.from({ length: s.maxEp }, (_, i) => ({ episode: i + 1, title: null, releaseDate: null })),
+    })),
   });
 }
 
@@ -490,88 +386,38 @@ async function handleStream(subjectId: string, se: number, ep: number, env: Env)
   if (!pack) return err('No streams available', 404);
 
   const isMovie = se === 0 && ep === 0;
-  let items = pack;
+  let items = isMovie ? pack : pack.filter((r) => r.se === se && r.ep === ep);
+  if (!items.length) return err('No streams available for this episode', 404);
 
-  if (!isMovie) {
-    const filtered = pack.filter((r) => r.se === se && r.ep === ep);
-    if (!filtered.length) return err('No streams available for this episode', 404);
-    items = filtered;
-  }
-
-  const seenQualities = new Set<string>();
-  const streams = items
-    .filter((item) => {
+  const seen = new Set<string>();
+  const streams = await Promise.all(
+    items.filter((item) => {
       const q = `${item.resolution}p`;
-      if (seenQualities.has(q)) return false;
-      seenQualities.add(q);
+      if (seen.has(q)) return false;
+      seen.add(q);
       return true;
-    })
-    .map((item) => mapResourceItem(item, env));
+    }).map((item) => mapResourceItem(item, env))
+  );
 
-  const resolvedStreams = await Promise.all(streams);
-
-  return json({ streams: resolvedStreams, total: resolvedStreams.length });
-}
-
-async function handleStreamAll(subjectId: string, env: Env): Promise<Response> {
-  const pack = await fetchResourcePack(env, subjectId);
-  if (!pack) return err('No streams available', 404);
-
-  const seasonMap = new Map<number, Map<number, Awaited<ReturnType<typeof mapResourceItem>>[]>>();
-
-  for (const item of pack) {
-    const seKey = item.se;
-    const epKey = item.ep;
-
-    if (!seasonMap.has(seKey)) seasonMap.set(seKey, new Map());
-    const epMap = seasonMap.get(seKey)!;
-
-    if (!epMap.has(epKey)) epMap.set(epKey, []);
-    const streams = epMap.get(epKey)!;
-
-    const q = `${item.resolution}p`;
-    if (!streams.find((x) => x.quality === q)) {
-      streams.push(await mapResourceItem(item, env));
-    }
-  }
-
-  const seasons = [...seasonMap.entries()]
-    .sort(([a], [b]) => a - b)
-    .map(([seasonNum, epMap]) => ({
-      season: seasonNum,
-      episodes: [...epMap.entries()]
-        .sort(([a], [b]) => a - b)
-        .map(([epNum, streams]) => ({
-          episode: epNum,
-          streams,
-          total:   streams.length,
-        })),
-    }));
-
-  return json({ seasons, total_seasons: seasons.length });
+  return json({ streams, total: streams.length });
 }
 
 async function handleDownload(subjectId: string, env: Env): Promise<Response> {
   const pack = await fetchResourcePack(env, subjectId);
   if (!pack) return err('No downloads available', 404);
 
-  const detail = await fetchWithHostPool<MBDetailData>(
-    env, PATHS.get, 'GET', { subjectId }
-  );
+  const detail = await fetchWithHostPool<MBDetailData>(env, PATHS.get, 'GET', { subjectId });
   const subjectTitle = detail?.title?.trim() || `Subject_${subjectId}`;
   const subjectType = detail?.subjectType ?? (pack.every((item) => item.se === 0 && item.ep === 0) ? 1 : 2);
 
   const seasonMap = new Map<number, Map<number, Awaited<ReturnType<typeof mapResourceItem>>[]>>();
 
   for (const item of pack) {
-    const seKey = item.se;
-    const epKey = item.ep;
+    if (!seasonMap.has(item.se)) seasonMap.set(item.se, new Map());
+    const epMap = seasonMap.get(item.se)!;
 
-    if (!seasonMap.has(seKey)) seasonMap.set(seKey, new Map());
-    const epMap = seasonMap.get(seKey)!;
-
-    if (!epMap.has(epKey)) epMap.set(epKey, []);
-    const qualities = epMap.get(epKey)!;
+    if (!epMap.has(item.ep)) epMap.set(item.ep, []);
+    const qualities = epMap.get(item.ep)!;
 
     const q = `${item.resolution}p`;
     if (!qualities.find((x) => x.quality === q)) {
@@ -580,70 +426,13 @@ async function handleDownload(subjectId: string, env: Env): Promise<Response> {
     }
   }
 
-  const seasons = [...seasonMap.entries()]
-    .sort(([a], [b]) => a - b)
-    .map(([seasonNum, epMap]) => ({
-      season: seasonNum,
-      episodes: [...epMap.entries()]
-        .sort(([a], [b]) => a - b)
-        .map(([epNum, qualities]) => ({
-          episode:  epNum,
-          qualities,
-        })),
-    }));
+  const seasons = [...seasonMap.entries()].map(([seasonNum, epMap]) => ({
+    season: seasonNum,
+    episodes: [...epMap.entries()].map(([epNum, qualities]) => ({ episode: epNum, qualities })),
+  }));
 
   return json({ seasons, total_seasons: seasons.length });
 }
-
-async function handleHomeRows(env: Env): Promise<Response> {
-  const data = await fetchH5Home(env.NIGERIA_IP);
-  if (!data) return err('Failed to fetch homepage', 502);
-
-  const rows = (data.operatingList || []).map((row) => ({
-    title: row.title,
-    opId:  row.opId,
-  }));
-
-  return json({ total: rows.length, rows });
-}
-
-async function handleHome(env: Env): Promise<Response> {
-  const data = await fetchH5Home(env.NIGERIA_IP);
-  if (!data) return err('Failed to fetch homepage', 502);
-
-  const rows = (data.operatingList || []).map((row) => ({
-    title:    row.title,
-    opId:     row.opId,
-    type:     row.type,
-    total:    (row.subjects || []).length,
-    subjects: (row.subjects || [])
-      .filter((s) => ALLOWED_SUBJECT_TYPES.has(s.subjectType))
-      .map(normalizeH5Subject),
-  }));
-
-  return json({ total: rows.length, rows });
-}
-
-async function handleHomeSubjects(opId: string, env: Env): Promise<Response> {
-  const data = await fetchH5Home(env.NIGERIA_IP);
-  if (!data) return err('Failed to fetch homepage', 502);
-
-  const row = (data.operatingList || []).find((r) => r.opId === opId);
-  if (!row) return err('Row not found', 404);
-
-  const subjects = (row.subjects || [])
-    .filter((s) => ALLOWED_SUBJECT_TYPES.has(s.subjectType))
-    .map(normalizeH5Subject);
-
-  return json({
-    opId:     row.opId,
-    title:    row.title,
-    total:    subjects.length,
-    subjects,
-  });
-}
-
-// ─── Router ───────────────────────────────────────────────────────────────────
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -657,39 +446,20 @@ export default {
       });
     }
 
-    const url  = new URL(request.url);
+    const url = new URL(request.url);
     const path = url.pathname;
 
-    if (path === '/' && request.method === 'GET') {
-      return handleRoot();
-    }
+    if (path === '/' && request.method === 'GET') return handleRoot();
+    if (path === '/health' && request.method === 'GET') return json({ status: 'ok', ts: Date.now() });
+    if (!isAuthorized(request, env)) return err('Unauthorized', 401);
 
-    if (path === '/health' && request.method === 'GET') {
-      return json({ status: 'ok', worker: 'moviebox-worker', ts: Date.now() });
-    }
-
-    if (!isAuthorized(request, env)) {
-      return err('Unauthorized', 401);
-    }
-
-    if (path === '/search' && request.method === 'POST') {
-      return handleSearch(request, env);
-    }
+    if (path === '/search' && request.method === 'POST') return handleSearch(request, env);
 
     const infoMatch = path.match(/^\/info\/([^/]+)$/);
-    if (infoMatch && request.method === 'GET') {
-      return handleInfo(infoMatch[1], env);
-    }
+    if (infoMatch && request.method === 'GET') return handleInfo(infoMatch[1], env);
 
     const seasonMatch = path.match(/^\/season\/([^/]+)$/);
-    if (seasonMatch && request.method === 'GET') {
-      return handleSeason(seasonMatch[1], env);
-    }
-
-    const streamAllMatch = path.match(/^\/stream\/([^/]+)\/all$/);
-    if (streamAllMatch && request.method === 'GET') {
-      return handleStreamAll(streamAllMatch[1], env);
-    }
+    if (seasonMatch && request.method === 'GET') return handleSeason(seasonMatch[1], env);
 
     const streamMatch = path.match(/^\/stream\/([^/]+)$/);
     if (streamMatch && request.method === 'GET') {
@@ -699,23 +469,7 @@ export default {
     }
 
     const downloadMatch = path.match(/^\/download\/([^/]+)$/);
-    if (downloadMatch && request.method === 'GET') {
-      return handleDownload(downloadMatch[1], env);
-    }
-
-    if (path === '/home/rows' && request.method === 'GET') {
-      return handleHomeRows(env);
-    }
-
-    if (path === '/home/subjects' && request.method === 'GET') {
-      const opId = url.searchParams.get('opId');
-      if (!opId) return err('opId is required');
-      return handleHomeSubjects(opId, env);
-    }
-
-    if (path === '/home' && request.method === 'GET') {
-      return handleHome(env);
-    }
+    if (downloadMatch && request.method === 'GET') return handleDownload(downloadMatch[1], env);
 
     return err('Not found', 404);
   },
