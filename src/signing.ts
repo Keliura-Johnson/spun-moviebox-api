@@ -1,5 +1,5 @@
 // src/signing.ts
-// MovieBox Mobile API v3 request signing — updated for Vercel Serverless Runtime compatibility
+// MovieBox Mobile API v3 request signing — bulletproof manual HMAC-MD5 for Vercel
 
 // @ts-ignore
 import md5 from 'js-md5';
@@ -7,7 +7,7 @@ import md5 from 'js-md5';
 const SECRET_KEY_B64 = '76iRl07s0xSN9jqmEWAt79EBJZulIQIsV64FZr2O';
 const SIGNATURE_BODY_MAX_BYTES = 102_400;
 
-// ─── Base64 helpers ────────────────────────────────────────────────────────────
+// ─── Base64 & Hex helpers ──────────────────────────────────────────────────────
 
 function b64Decode(value: string): Uint8Array {
   const padding = (4 - (value.length % 4)) % 4;
@@ -29,21 +29,55 @@ function b64Encode(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-// ─── MD5 via js-md5 ────────────────────────────────────────────────────────────
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+  }
+  return bytes;
+}
+
+// ─── MD5 & Manual HMAC-MD5 ────────────────────────────────────────────────────
 
 async function md5Hex(data: string | Uint8Array): Promise<string> {
-  if (data instanceof Uint8Array) {
-    return md5(data);
-  }
   return md5(data);
 }
 
-// ─── HMAC-MD5 via js-md5 ───────────────────────────────────────────────────────
-
 async function hmacMd5(keyBytes: Uint8Array, message: string): Promise<ArrayBuffer> {
-  // Use md5.hmac.array() for 100% bundler compatibility and convert to ArrayBuffer
-  const bytes = md5.hmac.array(keyBytes, message);
-  return new Uint8Array(bytes).buffer;
+  const blockSize = 64;
+  let key = keyBytes;
+
+  if (key.length > blockSize) {
+    key = hexToBytes(md5(key));
+  }
+  if (key.length < blockSize) {
+    const padded = new Uint8Array(blockSize);
+    padded.set(key);
+    key = padded;
+  }
+
+  const oKeyPad = new Uint8Array(blockSize);
+  const iKeyPad = new Uint8Array(blockSize);
+  for (let i = 0; i < blockSize; i++) {
+    oKeyPad[i] = key[i] ^ 0x5c;
+    iKeyPad[i] = key[i] ^ 0x36;
+  }
+
+  const messageBytes = new TextEncoder().encode(message);
+
+  // Inner hash: MD5(iKeyPad || message)
+  const innerInput = new Uint8Array(iKeyPad.length + messageBytes.length);
+  innerInput.set(iKeyPad);
+  innerInput.set(messageBytes, iKeyPad.length);
+  const innerHashBytes = hexToBytes(md5(innerInput));
+
+  // Outer hash: MD5(oKeyPad || innerHashBytes)
+  const outerInput = new Uint8Array(oKeyPad.length + innerHashBytes.length);
+  outerInput.set(oKeyPad);
+  outerInput.set(innerHashBytes, oKeyPad.length);
+  const outerHashBytes = hexToBytes(md5(outerInput));
+
+  return outerHashBytes.buffer;
 }
 
 // ─── Token & signature generators ─────────────────────────────────────────────
