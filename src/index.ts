@@ -234,7 +234,7 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
   const page = Number(body.page ?? url.searchParams.get('page') ?? 1);
   const perPage = Number(body.perPage ?? url.searchParams.get('perPage') ?? 20);
 
-  // Pass search params into Argument 4 (params -> query string), leaving body undefined (Argument 5)
+  // Send search parameters as query parameters (4th argument) as required by MovieBox mobile search
   const data = await fetchWithHostPool<MBSearchData>(
     env, PATHS.search, 'POST',
     { word: searchQuery, page, perPage, subjectType: 0 },
