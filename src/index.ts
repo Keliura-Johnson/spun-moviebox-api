@@ -1,5 +1,5 @@
 // src/index.ts
-// Spün MovieBox Worker — main entry point.
+// Spün MovieBox API — Vercel Serverless Function entry point.
 
 import {
   fetchWithHostPool,
@@ -22,8 +22,11 @@ function resolveSubjectType(subjectType: number): 'movie' | 'tv' | 'shorts' {
 }
 
 export interface Env extends SigningEnv {
-  MOVIEBOX_SECRET: string;
+  MOVIEBOX_SECRET?: string;
   NIGERIA_IP?: string;
+  RELAY_URL: string;
+  RELAY_SECRET: string;
+  MOVIEBOX_SESSION_KV: any;
 }
 
 // ─── Response helpers ─────────────────────────────────────────────────────────
@@ -231,7 +234,6 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
   const rawQuery = (body.keyword ?? body.word ?? body.query ?? url.searchParams.get('keyword') ?? url.searchParams.get('word') ?? url.searchParams.get('query')) as string;
   if (!rawQuery?.trim()) return err('keyword is required');
 
-  // Sanitize query: strip release years and remove punctuation
   const searchQuery = rawQuery
     .replace(/\s*\(\d{4}\)|\s+\d{4}$/, '')
     .replace(/[:\-_/\\.,?!]/g, ' ')
@@ -362,54 +364,100 @@ async function handleDownload(subjectId: string, env: Env): Promise<Response> {
   return json({ seasons, total_seasons: seasons.length });
 }
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        headers: {
-          'Access-Control-Allow-Origin':  '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, X-Worker-Secret',
-        },
-      });
+async function handleRequest(request: Request): Promise<Response> {
+  const env: Env = {
+    RELAY_URL: process.env.RELAY_URL ?? '',
+    RELAY_SECRET: process.env.RELAY_SECRET ?? '',
+    MOVIEBOX_SESSION_KV: {
+      get: async () => null,
+      put: async () => {},
+      delete: async () => {},
+    },
+  };
+
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      headers: {
+        'Access-Control-Allow-Origin':  '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, X-Worker-Secret',
+      },
+    });
+  }
+
+  const url = new URL(request.url);
+  const path = url.pathname;
+
+  if (path === '/' || path === '') return handleRoot();
+  if (path === '/health') return json({ status: 'ok', ts: Date.now() });
+
+  if (path === '/debug-probe') {
+    const testQuery = url.searchParams.get('q') ?? 'Avatar';
+    const result = await fetchWithHostPool<any>(
+      env, PATHS.search, 'POST',
+      undefined,
+      { keyword: testQuery, type: 0, subjectType: 0, page: 1, perPage: 10 }
+    );
+    return json({ queryUsed: testQuery, upstreamResult: result });
+  }
+
+  if (!isAuthorized(request, env)) return err('Unauthorized', 401);
+
+  if (path === '/search') return handleSearch(request, env);
+
+  const infoMatch = path.match(/^\/info\/([^/]+)$/);
+  if (infoMatch) return handleInfo(infoMatch[1], env);
+
+  const seasonMatch = path.match(/^\/season\/([^/]+)$/);
+  if (seasonMatch) return handleSeason(seasonMatch[1], env);
+
+  const streamMatch = path.match(/^\/stream\/([^/]+)$/);
+  if (streamMatch) {
+    const se = parseInt(url.searchParams.get('se') ?? '0');
+    const ep = parseInt(url.searchParams.get('ep') ?? '0');
+    return handleStream(streamMatch[1], se, ep, env);
+  }
+
+  const downloadMatch = path.match(/^\/download\/([^/]+)$/);
+  if (downloadMatch) return handleDownload(downloadMatch[1], env);
+
+  return err('Not found', 404);
+}
+
+// Vercel Serverless Function export
+export default async function handler(req: any, res: any) {
+  try {
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const host = req.headers['host'] || 'localhost';
+    const fullUrl = `${protocol}://${host}${req.url}`;
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
     }
+    const bodyBuffer = chunks.length ? Buffer.concat(chunks) : null;
+    const body = bodyBuffer && bodyBuffer.length > 0 && req.method !== 'GET' && req.method !== 'HEAD' 
+      ? bodyBuffer 
+      : undefined;
 
-    const url = new URL(request.url);
-    const path = url.pathname;
+    const webRequest = new Request(fullUrl, {
+      method: req.method,
+      headers: req.headers as Record<string, string>,
+      body: body as any,
+    });
 
-    if (path === '/' && request.method === 'GET') return handleRoot();
-    if (path === '/health' && request.method === 'GET') return json({ status: 'ok', ts: Date.now() });
+    const webResponse = await handleRequest(webRequest);
 
-    if (path === '/debug-probe' && request.method === 'GET') {
-      const testQuery = url.searchParams.get('q') ?? 'Avatar';
-      const result = await fetchWithHostPool<any>(
-        env, PATHS.search, 'POST',
-        undefined,
-        { keyword: testQuery, type: 0, subjectType: 0, page: 1, perPage: 10 }
-      );
-      return json({ queryUsed: testQuery, upstreamResult: result });
-    }
+    res.statusCode = webResponse.status;
+    webResponse.headers.forEach((value, key) => {
+      res.setHeader(key, value);
+    });
 
-    if (!isAuthorized(request, env)) return err('Unauthorized', 401);
-
-    if (path === '/search' && request.method === 'POST') return handleSearch(request, env);
-
-    const infoMatch = path.match(/^\/info\/([^/]+)$/);
-    if (infoMatch && request.method === 'GET') return handleInfo(infoMatch[1], env);
-
-    const seasonMatch = path.match(/^\/season\/([^/]+)$/);
-    if (seasonMatch && request.method === 'GET') return handleSeason(seasonMatch[1], env);
-
-    const streamMatch = path.match(/^\/stream\/([^/]+)$/);
-    if (streamMatch && request.method === 'GET') {
-      const se = parseInt(url.searchParams.get('se') ?? '0');
-      const ep = parseInt(url.searchParams.get('ep') ?? '0');
-      return handleStream(streamMatch[1], se, ep, env);
-    }
-
-    const downloadMatch = path.match(/^\/download\/([^/]+)$/);
-    if (downloadMatch && request.method === 'GET') return handleDownload(downloadMatch[1], env);
-
-    return err('Not found', 404);
-  },
-};
+    const responseBuffer = await webResponse.arrayBuffer();
+    return res.end(Buffer.from(responseBuffer));
+  } catch (error: any) {
+    console.error('[Vercel Handler Error]:', error);
+    res.statusCode = 500;
+    return res.setHeader('Content-Type', 'application/json').end(JSON.stringify({ error: error.message ?? 'Internal Server Error' }));
+  }
+}
