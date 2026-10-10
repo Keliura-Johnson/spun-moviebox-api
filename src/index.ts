@@ -228,21 +228,28 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
   } catch {}
 
   const url = new URL(request.url);
-  const rawQuery = (body.keyword ?? body.word ?? url.searchParams.get('keyword') ?? url.searchParams.get('word')) as string;
+  const rawQuery = (body.keyword ?? body.word ?? body.query ?? url.searchParams.get('keyword') ?? url.searchParams.get('word') ?? url.searchParams.get('query')) as string;
   if (!rawQuery?.trim()) return err('keyword is required');
 
-  // Strip release years like "(2015)" or "2015" from titles so search matches cleanly
-  const searchQuery = rawQuery.replace(/\s*\(\d{4}\)|\s+\d{4}$/, '').trim();
+  // Sanitize query: strip release years and remove punctuation
+  const searchQuery = rawQuery
+    .replace(/\s*\(\d{4}\)|\s+\d{4}$/, '')
+    .replace(/[:\-_/\\.,?!]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 
   const page = Number(body.page ?? url.searchParams.get('page') ?? 1);
   const perPage = Number(body.perPage ?? url.searchParams.get('perPage') ?? 20);
 
-  // Send search payload to search/v2 endpoint inside JSON Body
+  console.log(`[MovieBox Search] Searching upstream for: "${searchQuery}" (Raw: "${rawQuery}")`);
+
   const data = await fetchWithHostPool<MBSearchData>(
     env, PATHS.search, 'POST',
     undefined,
-    { keyword: searchQuery, subjectType: 0, page, perPage }
+    { keyword: searchQuery, type: 0, subjectType: 0, page, perPage }
   );
+
+  console.log(`[MovieBox Search] Response received. Items count: ${data?.items?.length ?? 0}`);
 
   if (!data) return json({ items: [], pager: null });
 
