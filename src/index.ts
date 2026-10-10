@@ -236,8 +236,8 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
 
   const data = await fetchWithHostPool<MBSearchData>(
     env, PATHS.search, 'POST',
-    { word: searchQuery, page, perPage, subjectType: 0 },
-    null
+    undefined,
+    { word: searchQuery, page, perPage, subjectType: 0 }
   );
 
   if (!data) return json({ items: [], pager: null });
