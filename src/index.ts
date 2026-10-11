@@ -113,10 +113,11 @@ async function fetchResourcePack(
 function isKnownPlaceholderResource(item: MBResourceItem): boolean {
   try {
     const url = new URL(item.resourceLink);
+    const filename = url.pathname.split('/').pop()?.toLowerCase();
+
     return (
       url.hostname.toLowerCase() === 'macdn.aoneroom.com' &&
-      url.pathname.startsWith('/other/') &&
-      url.pathname.toLowerCase().endsWith('.mp4')
+      filename === 'b164fbfb4347792950bdfbfb563d39d9.mp4'
     );
   } catch {
     return false;
