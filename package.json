@@ -1,8 +1,10 @@
+
 {
-  "name": "moviebox-worker",
-  "version": "1.0.0",
-  "description": "MovieBox Mobile API proxy — Cloudflare Worker for D.Verse",
+  "name": "spun-moviebox-api",
+  "version": "1.1.0",
+  "description": "Spün MovieBox API hosted on Vercel with a Render relay",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
