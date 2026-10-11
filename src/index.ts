@@ -317,7 +317,7 @@ function extractSearchItems(data: unknown): {
 
   let items: RawMovieBoxSubject[] = [];
 
-  if (Array.isArray(raw?.items)) {
+  if (Array.isArray(raw?.items) && raw.items.length > 0) {
     items = raw.items;
   } else if (Array.isArray(raw?.results)) {
     const subjectGroups = raw.results.filter(
