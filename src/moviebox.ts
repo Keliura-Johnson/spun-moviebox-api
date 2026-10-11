@@ -465,7 +465,7 @@ async function attemptHostPool<T>(
       ) as MovieBoxEnvelope<T>;
 
       if (envelope.code === 0) {
-        let result = envelope.data ?? null;
+        let result: T | null = (envelope.data ?? null) as T | null;
 
         if (path === PATHS.search && result !== null) {
           result = normalizeSearchData(result) as T | null;
