@@ -1,5 +1,5 @@
 // src/index.ts
-// Spün MovieBox API — Vercel Serverless Function entry point.
+// Spün MovieBox API — Cloudflare Worker entry point.
 
 import {
   fetchWithHostPool,
@@ -22,11 +22,11 @@ function resolveSubjectType(subjectType: number): 'movie' | 'tv' | 'shorts' {
 }
 
 export interface Env extends SigningEnv {
-  MOVIEBOX_SECRET?: string;
+  MOVIEBOX_SECRET: string;
   NIGERIA_IP?: string;
   RELAY_URL: string;
   RELAY_SECRET: string;
-  MOVIEBOX_SESSION_KV: any;
+  MOVIEBOX_SESSION_KV: KVNamespace;
 }
 
 // ─── Response helpers ─────────────────────────────────────────────────────────
@@ -35,8 +35,11 @@ function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
-      'Content-Type': 'application/json',
+      'Content-Type': 'application/json; charset=utf-8',
       'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, X-Worker-Secret',
+      'Cache-Control': 'no-store',
     },
   });
 }
@@ -47,8 +50,13 @@ function err(message: string, status = 400): Response {
 
 // ─── Auth guard ───────────────────────────────────────────────────────────────
 
-function isAuthorized(_request: Request, _env: Env): boolean {
-  return true;
+function isAuthorized(request: Request, env: Env): boolean {
+  const configuredSecret = env.MOVIEBOX_SECRET?.trim();
+  if (!configuredSecret) {
+    console.error('[Auth] MOVIEBOX_SECRET is not configured');
+    return false;
+  }
+  return request.headers.get('X-Worker-Secret') === configuredSecret;
 }
 
 // ─── Language name map ────────────────────────────────────────────────────────
@@ -253,7 +261,7 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
 
   console.log(`[MovieBox Search] Response received. Items count: ${data?.items?.length ?? 0}`);
 
-  if (!data) return json({ items: [], pager: null });
+  if (!data) return json({ error: 'MovieBox upstream search failed. Check Worker logs and relay/auth configuration.' }, 502);
 
   const items = (data.items || [])
     .filter((item) => ALLOWED_SUBJECT_TYPES.has(item.subjectType))
@@ -364,17 +372,7 @@ async function handleDownload(subjectId: string, env: Env): Promise<Response> {
   return json({ seasons, total_seasons: seasons.length });
 }
 
-async function handleRequest(request: Request): Promise<Response> {
-  const env: Env = {
-    RELAY_URL: process.env.RELAY_URL ?? '',
-    RELAY_SECRET: process.env.RELAY_SECRET ?? '',
-    MOVIEBOX_SESSION_KV: {
-      get: async () => null,
-      put: async () => {},
-      delete: async () => {},
-    },
-  };
-
+async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       headers: {
@@ -388,20 +386,24 @@ async function handleRequest(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
 
-  if (path === '/' || path === '') return handleRoot();
-  if (path === '/health') return json({ status: 'ok', ts: Date.now() });
+  if (path === '/' && request.method === 'GET') return handleRoot();
+  if (path === '/health' && request.method === 'GET') {
+    const configured = Boolean(env.RELAY_URL?.trim() && env.RELAY_SECRET?.trim() && env.MOVIEBOX_SECRET?.trim());
+    return json({ status: configured ? 'ok' : 'misconfigured', ts: Date.now(), configured });
+  }
 
-  if (path === '/debug-probe') {
+  if (!isAuthorized(request, env)) return err('Unauthorized', 401);
+
+  if (path === '/debug-probe' && request.method === 'GET') {
     const testQuery = url.searchParams.get('q') ?? 'Avatar';
-    const result = await fetchWithHostPool<any>(
+    const result = await fetchWithHostPool<MBSearchData>(
       env, PATHS.search, 'POST',
       undefined,
       { keyword: testQuery, type: 0, subjectType: 0, page: 1, perPage: 10 }
     );
+    if (!result) return json({ error: 'Upstream probe failed', queryUsed: testQuery }, 502);
     return json({ queryUsed: testQuery, upstreamResult: result });
   }
-
-  if (!isAuthorized(request, env)) return err('Unauthorized', 401);
 
   if (path === '/search') return handleSearch(request, env);
 
@@ -424,40 +426,28 @@ async function handleRequest(request: Request): Promise<Response> {
   return err('Not found', 404);
 }
 
-// Vercel Serverless Function export
-export default async function handler(req: any, res: any) {
-  try {
-    const protocol = req.headers['x-forwarded-proto'] || 'https';
-    const host = req.headers['host'] || 'localhost';
-    const fullUrl = `${protocol}://${host}${req.url}`;
-
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) {
-      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+// Cloudflare Worker entry point. Wrangler passes secrets and KV bindings in env.
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, X-Worker-Secret',
+          'Access-Control-Max-Age': '86400',
+        },
+      });
     }
-    const bodyBuffer = chunks.length ? Buffer.concat(chunks) : null;
-    const body = bodyBuffer && bodyBuffer.length > 0 && req.method !== 'GET' && req.method !== 'HEAD' 
-      ? bodyBuffer 
-      : undefined;
 
-    const webRequest = new Request(fullUrl, {
-      method: req.method,
-      headers: req.headers as Record<string, string>,
-      body: body as any,
-    });
+    try {
+      return await handleRequest(request, env);
+    } catch (error) {
+      console.error('[Worker Request Error]', error);
+      const message = error instanceof Error ? error.message : 'Internal Server Error';
+      return json({ error: message }, 500);
+    }
+  },
+};
 
-    const webResponse = await handleRequest(webRequest);
-
-    res.statusCode = webResponse.status;
-    webResponse.headers.forEach((value, key) => {
-      res.setHeader(key, value);
-    });
-
-    const responseBuffer = await webResponse.arrayBuffer();
-    return res.end(Buffer.from(responseBuffer));
-  } catch (error: any) {
-    console.error('[Vercel Handler Error]:', error);
-    res.statusCode = 500;
-    return res.setHeader('Content-Type', 'application/json').end(JSON.stringify({ error: error.message ?? 'Internal Server Error' }));
-  }
-}
