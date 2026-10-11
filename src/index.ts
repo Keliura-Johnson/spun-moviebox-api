@@ -110,6 +110,19 @@ async function fetchResourcePack(
   return allItems.sort((a, b) => b.resolution - a.resolution);
 }
 
+function isKnownPlaceholderResource(item: MBResourceItem): boolean {
+  try {
+    const url = new URL(item.resourceLink);
+    return (
+      url.hostname.toLowerCase() === 'macdn.aoneroom.com' &&
+      url.pathname.startsWith('/other/') &&
+      url.pathname.toLowerCase().endsWith('.mp4')
+    );
+  } catch {
+    return false;
+  }
+}
+
 function base64UrlEncode(value: string): string {
   const bytes = new TextEncoder().encode(value);
   let binary = '';
@@ -534,10 +547,24 @@ async function handleStream(
     return err('No streams available for this episode', 404);
   }
 
+  const validItems = items.filter((item) => !isKnownPlaceholderResource(item));
+
+  if (!validItems.length) {
+    return json(
+      {
+        error: 'MovieBox returned its update/placeholder video instead of the requested movie or episode.',
+        code: 'PLACEHOLDER_MEDIA_DETECTED',
+        subjectId,
+        candidatesChecked: items.length,
+      },
+      502
+    );
+  }
+
   const seen = new Set<string>();
 
   const streams = await Promise.all(
-    items
+    validItems
       .filter((item) => {
         const quality = `${item.resolution}p`;
 
@@ -560,6 +587,20 @@ async function handleDownload(
 
   if (!pack) return err('No downloads available', 404);
 
+  const validPack = pack.filter((item) => !isKnownPlaceholderResource(item));
+
+  if (!validPack.length) {
+    return json(
+      {
+        error: 'MovieBox returned its update/placeholder video instead of downloadable movie files.',
+        code: 'PLACEHOLDER_MEDIA_DETECTED',
+        subjectId,
+        candidatesChecked: pack.length,
+      },
+      502
+    );
+  }
+
   const detail = await fetchWithHostPool<MBDetailData>(
     env,
     PATHS.get,
@@ -571,14 +612,14 @@ async function handleDownload(
 
   const subjectType =
     detail?.subjectType ??
-    (pack.every((item) => item.se === 0 && item.ep === 0) ? 1 : 2);
+    (validPack.every((item) => item.se === 0 && item.ep === 0) ? 1 : 2);
 
   const seasonMap = new Map<
     number,
     Map<number, Awaited<ReturnType<typeof mapResourceItem>>[]>
   >();
 
-  for (const item of pack) {
+  for (const item of validPack) {
     if (!seasonMap.has(item.se)) {
       seasonMap.set(item.se, new Map());
     }
