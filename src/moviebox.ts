@@ -1,7 +1,6 @@
+
 // src/moviebox.ts
-// MovieBox Mobile API client for Cloudflare Workers.
-// Handles host pool fallback, request signing, auth token bootstrap, and all
-// endpoint calls.
+// MovieBox API client for Vercel with Render relay support.
 
 import {
   generateClientToken,
@@ -11,8 +10,6 @@ import {
   invalidateAuthToken,
   type SigningEnv,
 } from './signing.js';
-
-// ─── Constants ────────────────────────────────────────────────────────────────
 
 export const HOST_POOL = [
   'https://api6.aoneroom.com',
@@ -36,53 +33,47 @@ const USER_AGENT =
   `(Linux; U; Android ${ANDROID_VERSION}; en_US; ` +
   `${DEVICE_MODEL}; Build/${ANDROID_BUILD}; Cronet/135.0.7012.3)`;
 
-// ─── Paths ────────────────────────────────────────────────────────────────────
-
 export const PATHS = {
-  search:        '/wefeed-mobile-bff/subject-api/search/v2',
-  get:           '/wefeed-mobile-bff/subject-api/get',
-  seasonInfo:    '/wefeed-mobile-bff/subject-api/season-info',
-  resource:      '/wefeed-mobile-bff/subject-api/resource',
-  captions:      '/wefeed-mobile-bff/subject-api/get-ext-captions',
-  tabOperating:  '/wefeed-mobile-bff/tab-operating',
+  search: '/wefeed-mobile-bff/subject-api/search/v2',
+  get: '/wefeed-mobile-bff/subject-api/get',
+  seasonInfo: '/wefeed-mobile-bff/subject-api/season-info',
+  resource: '/wefeed-mobile-bff/subject-api/resource',
+  captions: '/wefeed-mobile-bff/subject-api/get-ext-captions',
+  tabOperating: '/wefeed-mobile-bff/tab-operating',
 };
-
-// ─── Client identity ──────────────────────────────────────────────────────────
 
 function makeClientInfo(): string {
   const deviceId = Array.from(crypto.getRandomValues(new Uint8Array(16)))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
-  const gaid = crypto.randomUUID();
 
   return JSON.stringify({
-    package_name:    'com.community.oneroom',
-    version_name:    VERSION_NAME,
-    version_code:    VERSION_CODE,
-    os:              'android',
-    os_version:      ANDROID_VERSION,
-    install_ch:      'ps',
-    device_id:       deviceId,
-    install_store:   'ps',
-    gaid,
-    brand:           DEVICE_BRAND,
-    model:           DEVICE_MODEL,
+    package_name: 'com.community.oneroom',
+    version_name: VERSION_NAME,
+    version_code: VERSION_CODE,
+    os: 'android',
+    os_version: ANDROID_VERSION,
+    install_ch: 'ps',
+    device_id: deviceId,
+    install_store: 'ps',
+    gaid: crypto.randomUUID(),
+    brand: DEVICE_BRAND,
+    model: DEVICE_MODEL,
     system_language: 'en',
-    net:             'NETWORK_WIFI',
-    region:          'US',
-    timezone:        'America/New_York',
-    sp_code:         '40401',
-    'X-Play-Mode':   '2',
+    net: 'NETWORK_WIFI',
+    region: 'US',
+    timezone: 'America/New_York',
+    sp_code: '40401',
+    'X-Play-Mode': '2',
   });
 }
 
 let _clientInfo: string | null = null;
+
 function getClientInfo(): string {
   if (!_clientInfo) _clientInfo = makeClientInfo();
   return _clientInfo;
 }
-
-// ─── Signed headers builder ───────────────────────────────────────────────────
 
 async function buildHeaders(
   method: string,
@@ -91,7 +82,8 @@ async function buildHeaders(
   authToken: string | null = null
 ): Promise<Record<string, string>> {
   const accept = 'application/json';
-  const contentType = body !== null ? 'application/json; charset=utf-8' : 'application/json';
+  const contentType =
+    body !== null ? 'application/json; charset=utf-8' : 'application/json';
   const ts = Date.now();
 
   const [token, signature] = await Promise.all([
@@ -100,25 +92,23 @@ async function buildHeaders(
   ]);
 
   const headers: Record<string, string> = {
-    'User-Agent':      USER_AGENT,
-    'Accept':          accept,
-    'Content-Type':    contentType,
-    'Connection':      'keep-alive',
-    'X-Client-Token':  token,
-    'x-tr-signature':  signature,
-    'X-Client-Info':   getClientInfo(),
+    'User-Agent': USER_AGENT,
+    Accept: accept,
+    'Content-Type': contentType,
+    Connection: 'keep-alive',
+    'X-Client-Token': token,
+    'x-tr-signature': signature,
+    'X-Client-Info': getClientInfo(),
     'X-Client-Status': '0',
-    'X-Play-Mode':     '2',
+    'X-Play-Mode': '2',
   };
 
   if (authToken) {
-    headers['Authorization'] = `Bearer ${authToken}`;
+    headers.Authorization = `Bearer ${authToken}`;
   }
 
   return headers;
 }
-
-// ─── Relay fetch implementation ───────────────────────────────────────────────
 
 interface RelayResult {
   status: number;
@@ -133,18 +123,29 @@ function parseRelayResult(value: unknown): RelayResult {
 
   const envelope = value as Record<string, unknown>;
   const status = envelope.status;
-  if (typeof status !== 'number' || !Number.isInteger(status) || status < 100 || status > 599) {
+
+  if (
+    typeof status !== 'number' ||
+    !Number.isInteger(status) ||
+    status < 100 ||
+    status > 599
+  ) {
     throw new Error('relay returned an invalid upstream status');
   }
-  
-  const body = typeof envelope.body === 'string' 
-    ? envelope.body 
-    : JSON.stringify(envelope.body ?? '');
+
+  const body =
+    typeof envelope.body === 'string'
+      ? envelope.body
+      : JSON.stringify(envelope.body ?? '');
 
   const rawHeaders = envelope.headers;
   const headers: Record<string, string> = {};
-  
-  if (rawHeaders && typeof rawHeaders === 'object' && !Array.isArray(rawHeaders)) {
+
+  if (
+    rawHeaders &&
+    typeof rawHeaders === 'object' &&
+    !Array.isArray(rawHeaders)
+  ) {
     for (const [key, headerValue] of Object.entries(rawHeaders)) {
       if (typeof headerValue === 'string') {
         headers[key.toLowerCase()] = headerValue;
@@ -163,9 +164,11 @@ async function relayFetch(
   bodyStr: string | null
 ): Promise<RelayResult> {
   const relayBaseUrl = env.RELAY_URL?.trim().replace(/\/+$/, '');
+
   if (!relayBaseUrl) {
     throw new Error('RELAY_URL is not configured');
   }
+
   if (!env.RELAY_SECRET) {
     throw new Error('RELAY_SECRET is not configured');
   }
@@ -188,23 +191,31 @@ async function relayFetch(
   }
 
   const responseText = await relayResponse.text();
+
   if (!responseText) {
     throw new Error('relay returned an empty response');
   }
 
   let rawEnvelope: unknown;
+
   try {
     rawEnvelope = JSON.parse(responseText);
   } catch {
-    throw new Error(`relay returned invalid JSON: ${responseText.slice(0, 100)}`);
+    throw new Error(
+      `relay returned invalid JSON: ${responseText.slice(0, 100)}`
+    );
   }
 
   return parseRelayResult(rawEnvelope);
 }
 
-function extractXUserTokenFromHeaders(headers: Record<string, string>): string | null {
-  const xUser = headers['x-user'] ?? headers['X-User'];
+function extractXUserTokenFromHeaders(
+  headers: Record<string, string>
+): string | null {
+  const xUser = headers['x-user'];
+
   if (!xUser) return null;
+
   try {
     const payload = JSON.parse(xUser) as { token?: string };
     return payload.token ?? null;
@@ -217,6 +228,143 @@ interface HostPoolAttemptResult<T> {
   data: T | null;
   freshXUserToken: string | null;
   authFailure: boolean;
+}
+
+export interface MBSearchItem {
+  subjectId: string;
+  subjectType: number;
+  title: string;
+  description?: string;
+  releaseDate?: string;
+  duration?: string;
+  genre?: string;
+  cover?: {
+    url: string;
+    thumbnail?: string;
+  };
+  countryName?: string;
+  imdbRatingValue?: string;
+  language?: string;
+}
+
+export interface MBSearchData {
+  pager: {
+    hasMore: boolean;
+    nextPage: string;
+    page: string;
+    perPage: number;
+    totalCount: number;
+  };
+  items: MBSearchItem[];
+}
+
+export interface MBDetailData {
+  subjectId: string;
+  subjectType: number;
+  title: string;
+  description?: string;
+  releaseDate?: string;
+  duration?: number | string;
+  genre?: string;
+  cover?: { url: string };
+  countryName?: string;
+  imdbRatingValue?: string;
+  hasResource?: boolean;
+  language?: string;
+  staffList?: Array<{
+    name: string;
+    role: string;
+    avatar?: { url?: string };
+  }>;
+}
+
+export interface MBSeasonData {
+  subjectId?: string;
+  subjectType?: number;
+  seasons?: Array<{
+    se: number;
+    maxEp: number;
+    allEp?: string;
+    resolutions?: Array<{
+      resolution: number;
+      epNum: number;
+    }>;
+  }>;
+}
+
+export interface MBResourceItem {
+  episode: number;
+  title: string;
+  resourceLink: string;
+  linkType: number;
+  size?: string;
+  resourceId: string;
+  resolution: number;
+  codecName?: string;
+  duration?: number;
+  requireMemberType?: number;
+  extCaptions?: Array<{
+    lan: string;
+    lanName?: string;
+    url: string;
+  }>;
+  se: number;
+  ep: number;
+}
+
+export interface MBResourceData {
+  pager: {
+    hasMore: boolean;
+    totalCount: number;
+    nextPage?: string;
+    page?: string;
+    perPage?: number;
+  };
+  list: MBResourceItem[];
+}
+
+interface MovieBoxEnvelope<T> {
+  code: number;
+  message?: string;
+  data?: T;
+}
+
+interface RawSearchResponse {
+  pager?: Partial<MBSearchData['pager']>;
+  items?: MBSearchItem[];
+  results?: Array<{
+    subjects?: MBSearchItem[];
+  }>;
+}
+
+function normalizeSearchData(value: unknown): MBSearchData | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const raw = value as RawSearchResponse;
+
+  const items =
+    Array.isArray(raw.items) && raw.items.length > 0
+      ? raw.items
+      : Array.isArray(raw.results)
+        ? raw.results.flatMap((group) =>
+            Array.isArray(group.subjects) ? group.subjects : []
+          )
+        : [];
+
+  const pager = raw.pager ?? {};
+
+  return {
+    items,
+    pager: {
+      hasMore: pager.hasMore ?? false,
+      nextPage: String(pager.nextPage ?? '2'),
+      page: String(pager.page ?? '1'),
+      perPage: Number(pager.perPage ?? items.length),
+      totalCount: Math.max(Number(pager.totalCount ?? 0), items.length),
+    },
+  };
 }
 
 async function attemptHostPool<T>(
@@ -233,6 +381,7 @@ async function attemptHostPool<T>(
 
   for (const base of HOST_POOL) {
     const url = new URL(`${base}${path}`);
+
     if (params) {
       for (const [key, value] of Object.entries(params)) {
         url.searchParams.set(key, String(value));
@@ -243,40 +392,73 @@ async function attemptHostPool<T>(
     const headers = await buildHeaders(method, urlStr, bodyStr, authToken);
 
     try {
-      const relayResult = await relayFetch(env, urlStr, method, headers, bodyStr);
+      const relayResult = await relayFetch(
+        env,
+        urlStr,
+        method,
+        headers,
+        bodyStr
+      );
 
       sawAnyResponse = true;
 
       const xUserToken = extractXUserTokenFromHeaders(relayResult.headers);
-      if (xUserToken) freshXUserToken = xUserToken;
+
+      if (xUserToken) {
+        freshXUserToken = xUserToken;
+      }
 
       if (relayResult.status === 401 || relayResult.status === 403) {
-        console.warn(`[MovieBox] Host ${base} returned ${relayResult.status} (auth) — trying next`);
+        console.warn(
+          `[MovieBox] Host ${base} returned ${relayResult.status} (auth) — trying next`
+        );
         sawAuthFailure = true;
         continue;
       }
 
       if (relayResult.status < 200 || relayResult.status >= 300) {
-        console.warn(`[MovieBox] Host ${base} returned ${relayResult.status} — trying next`);
+        console.warn(
+          `[MovieBox] Host ${base} returned ${relayResult.status} — trying next`
+        );
         continue;
       }
 
-      const data = JSON.parse(relayResult.body) as { code: number; message?: string; data?: T };
+      const envelope = JSON.parse(
+        relayResult.body
+      ) as MovieBoxEnvelope<T>;
 
-      if (data.code === 0) {
-        return { data: (data.data ?? null) as T | null, freshXUserToken, authFailure: false };
+      if (envelope.code === 0) {
+        let result = envelope.data ?? null;
+
+        if (path === PATHS.search && result !== null) {
+          result = normalizeSearchData(result) as T | null;
+        }
+
+        if (result !== null) {
+          return {
+            data: result,
+            freshXUserToken,
+            authFailure: false,
+          };
+        }
       }
 
-      console.warn(`[MovieBox] Host ${base} returned API code ${data.code}: ${data.message ?? ''} — trying next`);
-      if (data.message && /token|auth/i.test(data.message)) {
+      console.warn(
+        `[MovieBox] Host ${base} returned API code ${envelope.code}: ${envelope.message ?? ''} — trying next`
+      );
+
+      if (envelope.message && /token|auth/i.test(envelope.message)) {
         sawAuthFailure = true;
       }
-    } catch (err) {
-      console.warn(`[MovieBox] Host ${base} failed: ${err} — trying next`);
+    } catch (error) {
+      console.warn(
+        `[MovieBox] Host ${base} failed: ${error} — trying next`
+      );
     }
   }
 
   console.error(`[MovieBox] All ${HOST_POOL.length} hosts exhausted for ${path}`);
+
   return {
     data: null,
     freshXUserToken,
@@ -306,18 +488,34 @@ export async function fetchWithHostPool<T>(
           null,
           null
         );
+
         return result.freshXUserToken;
       });
-    } catch (e) {
-      console.error(`[MovieBox] Auth bootstrap failed; refusing to send a fake token: ${e}`);
+    } catch (error) {
+      console.error(
+        `[MovieBox] Auth bootstrap failed; refusing to send a fake token: ${error}`
+      );
       return null;
     }
   }
 
-  let result = await attemptHostPool<T>(env, path, method, params, bodyStr, authToken);
+  let result = await attemptHostPool<T>(
+    env,
+    path,
+    method,
+    undefined === params ? undefined : params,
+    bodyStr,
+    authToken
+  );
 
-  if (result.freshXUserToken && result.freshXUserToken !== authToken) {
-    await bootstrapAuthToken(env, async () => result.freshXUserToken).catch(() => {});
+  if (
+    result.freshXUserToken &&
+    result.freshXUserToken !== authToken
+  ) {
+    await bootstrapAuthToken(
+      env,
+      async () => result.freshXUserToken
+    ).catch(() => {});
   }
 
   if (result.data !== null) {
@@ -325,7 +523,10 @@ export async function fetchWithHostPool<T>(
   }
 
   if (result.authFailure) {
-    console.warn(`[MovieBox] Auth failure on ${path} — invalidating token and retrying once`);
+    console.warn(
+      `[MovieBox] Auth failure on ${path} — invalidating token and retrying once`
+    );
+
     await invalidateAuthToken(env);
 
     try {
@@ -338,85 +539,25 @@ export async function fetchWithHostPool<T>(
           null,
           null
         );
+
         return bootstrapResult.freshXUserToken;
       });
-    } catch (e) {
-      console.error(`[MovieBox] Token refresh failed: ${e}`);
+    } catch (error) {
+      console.error(`[MovieBox] Token refresh failed: ${error}`);
       return null;
     }
 
-    result = await attemptHostPool<T>(env, path, method, params, bodyStr, authToken);
+    result = await attemptHostPool<T>(
+      env,
+      path,
+      method,
+      params,
+      bodyStr,
+      authToken
+    );
+
     return result.data;
   }
 
   return null;
-}
-
-// ─── Raw API response shapes ──────────────────────────────────────────────────
-
-export interface MBSearchItem {
-  subjectId:        string;
-  subjectType:      number;
-  title:            string;
-  description?:     string;
-  releaseDate?:     string;
-  duration?:        string;
-  genre?:           string;
-  cover?:           { url: string; thumbnail?: string };
-  countryName?:     string;
-  imdbRatingValue?: string;
-  language?:        string;
-}
-
-export interface MBSearchData {
-  pager: { hasMore: boolean; nextPage: string; page: string; perPage: number; totalCount: number };
-  items: MBSearchItem[];
-}
-
-export interface MBDetailData {
-  subjectId:        string;
-  subjectType:      number;
-  title:            string;
-  description?:     string;
-  releaseDate?:     string;
-  duration?:        number | string;
-  genre?:           string;
-  cover?:           { url: string };
-  countryName?:     string;
-  imdbRatingValue?: string;
-  hasResource?:     boolean;
-  language?:        string;
-  staffList?:       Array<{ name: string; role: string; avatar?: { url?: string } }>;
-}
-
-export interface MBSeasonData {
-  subjectId?:   string;
-  subjectType?: number;
-  seasons?: Array<{
-    se:             number;
-    maxEp:          number;
-    allEp?:         string;
-    resolutions?: Array<{ resolution: number; epNum: number }>;
-  }>;
-}
-
-export interface MBResourceItem {
-  episode:            number;
-  title:              string;
-  resourceLink:       string;
-  linkType:           number;
-  size?:              string;
-  resourceId:         string;
-  resolution:         number;
-  codecName?:         string;
-  duration?:          number;
-  requireMemberType?: number;
-  extCaptions?:       Array<{ lan: string; lanName?: string; url: string }>;
-  se:                 number;
-  ep:                 number;
-}
-
-export interface MBResourceData {
-  pager: { hasMore: boolean; totalCount: number; nextPage?: string; page?: string; perPage?: number };
-  list:  MBResourceItem[];
 }
