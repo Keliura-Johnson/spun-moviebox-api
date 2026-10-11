@@ -1,55 +1,41 @@
 // src/signing.ts
-// MovieBox Mobile API v3 request signing — bulletproof manual HMAC-MD5 for Vercel
+// Request signing and KV-backed authentication-token caching for the Cloudflare Worker.
 
-// @ts-ignore
+// @ts-ignore - js-md5 supports strings and Uint8Array inputs.
 import md5 from 'js-md5';
 
 const SECRET_KEY_B64 = '76iRl07s0xSN9jqmEWAt79EBJZulIQIsV64FZr2O';
 const SIGNATURE_BODY_MAX_BYTES = 102_400;
 
-// ─── Base64 & Hex helpers ──────────────────────────────────────────────────────
-
 function b64Decode(value: string): Uint8Array {
   const padding = (4 - (value.length % 4)) % 4;
-  const padded = value + '='.repeat(padding);
-  const binary = atob(padded);
+  const binary = atob(value + '='.repeat(padding));
   const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
 }
 
 function b64Encode(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = '';
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
+  for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
 }
 
 function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
-  }
+  const bytes = new Uint8Array(Math.floor(hex.length / 2));
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   return bytes;
 }
 
-// ─── MD5 & Manual HMAC-MD5 ────────────────────────────────────────────────────
-
-async function md5Hex(data: string | Uint8Array): Promise<string> {
+function md5Hex(data: string | Uint8Array): string {
   return md5(data);
 }
 
 async function hmacMd5(keyBytes: Uint8Array, message: string): Promise<ArrayBuffer> {
   const blockSize = 64;
   let key = keyBytes;
-
-  if (key.length > blockSize) {
-    key = hexToBytes(md5(key));
-  }
+  if (key.length > blockSize) key = hexToBytes(md5Hex(key));
   if (key.length < blockSize) {
     const padded = new Uint8Array(blockSize);
     padded.set(key);
@@ -64,39 +50,29 @@ async function hmacMd5(keyBytes: Uint8Array, message: string): Promise<ArrayBuff
   }
 
   const messageBytes = new TextEncoder().encode(message);
-
-  // Inner hash: MD5(iKeyPad || message)
   const innerInput = new Uint8Array(iKeyPad.length + messageBytes.length);
   innerInput.set(iKeyPad);
   innerInput.set(messageBytes, iKeyPad.length);
-  const innerHashBytes = hexToBytes(md5(innerInput));
+  const innerHashBytes = hexToBytes(md5Hex(innerInput));
 
-  // Outer hash: MD5(oKeyPad || innerHashBytes)
   const outerInput = new Uint8Array(oKeyPad.length + innerHashBytes.length);
   outerInput.set(oKeyPad);
   outerInput.set(innerHashBytes, oKeyPad.length);
-  const outerHashBytes = hexToBytes(md5(outerInput));
-
-  return outerHashBytes.buffer as ArrayBuffer;
+  return hexToBytes(md5Hex(outerInput)).buffer as ArrayBuffer;
 }
-
-// ─── Token & signature generators ─────────────────────────────────────────────
 
 export async function generateClientToken(ts: number): Promise<string> {
   const tsStr = String(ts);
-  const reversed = tsStr.split('').reverse().join('');
-  const hash = await md5Hex(reversed);
+  const hash = md5Hex(tsStr.split('').reverse().join(''));
   return `${tsStr},${hash}`;
 }
 
 function sortedQueryString(url: string): string {
   const u = new URL(url);
-  const params: string[] = [];
-  const sorted = [...u.searchParams.entries()].sort(([a], [b]) => a.localeCompare(b));
-  for (const [key, value] of sorted) {
-    params.push(`${key}=${value}`);
-  }
-  return params.join('&');
+  return [...u.searchParams.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${value}`)
+    .join('&');
 }
 
 async function buildCanonicalString(
@@ -108,23 +84,16 @@ async function buildCanonicalString(
   ts: number
 ): Promise<string> {
   const u = new URL(url);
-  const path = u.pathname;
   const query = sortedQueryString(url);
-  const canonicalUrl = query ? `${path}?${query}` : path;
-
+  const canonicalUrl = query ? `${u.pathname}?${query}` : u.pathname;
   let bodyHash = '';
   let bodyLength = '';
-
   if (body !== null) {
     const bodyBytes = new TextEncoder().encode(body);
-    const truncated = bodyBytes.slice(0, SIGNATURE_BODY_MAX_BYTES);
-    bodyHash = await md5Hex(truncated);
+    bodyHash = md5Hex(bodyBytes.slice(0, SIGNATURE_BODY_MAX_BYTES));
     bodyLength = String(bodyBytes.length);
   }
-
-  return [method.toUpperCase(), accept, contentType, bodyLength, ts, bodyHash, canonicalUrl].join(
-    '\n'
-  );
+  return [method.toUpperCase(), accept, contentType, bodyLength, ts, bodyHash, canonicalUrl].join('\n');
 }
 
 export async function generateSignature(
@@ -136,12 +105,9 @@ export async function generateSignature(
   ts: number
 ): Promise<string> {
   const canonical = await buildCanonicalString(method, accept, contentType, url, body, ts);
-  const secretBytes = b64Decode(SECRET_KEY_B64);
-  const mac = await hmacMd5(secretBytes, canonical);
+  const mac = await hmacMd5(b64Decode(SECRET_KEY_B64), canonical);
   return `${ts}|2|${b64Encode(mac)}`;
 }
-
-// ─── Auth token bootstrap (KV-backed) ─────────────────────────────────────────
 
 export interface SigningEnv {
   MOVIEBOX_SESSION_KV: KVNamespace;
@@ -150,7 +116,7 @@ export interface SigningEnv {
 }
 
 const KV_TOKEN_KEY = 'mobile_auth_token';
-const KV_TTL_SECONDS = 60 * 60 * 24; 
+const KV_TTL_SECONDS = 60 * 60 * 24;
 const EXPIRY_SAFETY_MARGIN_SECONDS = 300;
 
 interface CachedToken {
@@ -158,16 +124,14 @@ interface CachedToken {
   expiresAtSeconds: number;
 }
 
-let _bootstrapPromise: Promise<string> | null = null;
+let bootstrapPromise: Promise<string> | null = null;
 
 function decodeJwtExpSeconds(jwt: string): number | null {
   try {
     const payloadB64 = jwt.split('.')[1];
     if (!payloadB64) return null;
-    const padded = payloadB64.replace(/-/g, '+').replace(/_/g, '/');
-    const padding = '='.repeat((4 - (padded.length % 4)) % 4);
-    const json = atob(padded + padding);
-    const payload = JSON.parse(json) as { exp?: number };
+    const normalized = payloadB64.replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(normalized + '='.repeat((4 - normalized.length % 4) % 4))) as { exp?: number };
     return typeof payload.exp === 'number' ? payload.exp : null;
   } catch {
     return null;
@@ -178,9 +142,11 @@ async function readTokenFromKv(kv: KVNamespace): Promise<CachedToken | null> {
   try {
     const raw = await kv.get(KV_TOKEN_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as CachedToken;
-  } catch (e) {
-    console.warn(`[Signing] Failed to read/parse KV token: ${e}`);
+    const cached = JSON.parse(raw) as Partial<CachedToken>;
+    if (typeof cached.token !== 'string' || !cached.token || typeof cached.expiresAtSeconds !== 'number') return null;
+    return { token: cached.token, expiresAtSeconds: cached.expiresAtSeconds };
+  } catch (error) {
+    console.warn('[Signing] Failed to read/parse KV token:', error);
     return null;
   }
 }
@@ -188,53 +154,43 @@ async function readTokenFromKv(kv: KVNamespace): Promise<CachedToken | null> {
 async function writeTokenToKv(kv: KVNamespace, cached: CachedToken): Promise<void> {
   try {
     await kv.put(KV_TOKEN_KEY, JSON.stringify(cached), { expirationTtl: KV_TTL_SECONDS });
-  } catch (e) {
-    console.warn(`[Signing] Failed to write token to KV: ${e}`);
+  } catch (error) {
+    console.warn('[Signing] Failed to write token to KV:', error);
   }
 }
 
 function isExpiringSoon(cached: CachedToken): boolean {
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  return nowSeconds >= cached.expiresAtSeconds - EXPIRY_SAFETY_MARGIN_SECONDS;
+  return Math.floor(Date.now() / 1000) >= cached.expiresAtSeconds - EXPIRY_SAFETY_MARGIN_SECONDS;
 }
 
 export async function bootstrapAuthToken(
   env: SigningEnv,
   signedFetch: () => Promise<string | null>
 ): Promise<string> {
-  if (!_bootstrapPromise) {
-    _bootstrapPromise = (async () => {
+  if (!bootstrapPromise) {
+    bootstrapPromise = (async () => {
       const token = await signedFetch();
-      if (!token) {
-        throw new Error('[Signing] Bootstrap failed — no x-user token received from any host');
-      }
-
-      const exp = decodeJwtExpSeconds(token);
-      const expiresAtSeconds = exp ?? Math.floor(Date.now() / 1000) + 3600;
-
+      if (!token) throw new Error('Bootstrap response did not contain an x-user token');
+      const expiresAtSeconds = decodeJwtExpSeconds(token) ?? Math.floor(Date.now() / 1000) + 3600;
       await writeTokenToKv(env.MOVIEBOX_SESSION_KV, { token, expiresAtSeconds });
-
       return token;
     })().finally(() => {
-      _bootstrapPromise = null;
+      bootstrapPromise = null;
     });
   }
-
-  return _bootstrapPromise;
+  return bootstrapPromise;
 }
 
 export async function getCachedAuthToken(env: SigningEnv): Promise<string | null> {
   const cached = await readTokenFromKv(env.MOVIEBOX_SESSION_KV);
-  if (cached && !isExpiringSoon(cached)) {
-    return cached.token;
-  }
-  return null;
+  return cached && !isExpiringSoon(cached) ? cached.token : null;
 }
 
 export async function invalidateAuthToken(env: SigningEnv): Promise<void> {
   try {
     await env.MOVIEBOX_SESSION_KV.delete(KV_TOKEN_KEY);
-  } catch (e) {
-    console.warn(`[Signing] Failed to invalidate KV token: ${e}`);
+  } catch (error) {
+    console.warn('[Signing] Failed to invalidate KV token:', error);
   }
 }
+
