@@ -225,9 +225,10 @@ async function proxyMediaUrl(
     filename
   );
 
-const proxy = new URL(
-  relayBaseUrl + '/media/' + base64UrlEncode(target.toString())
-);
+  const proxy = new URL(
+    relayBaseUrl + '/media/' + base64UrlEncode(target.toString())
+  );
+
   proxy.searchParams.set('e', String(expires));
   proxy.searchParams.set('s', signature);
 
@@ -276,6 +277,83 @@ function handleRoot(): Response {
   });
 }
 
+interface RawMovieBoxSubject {
+  subjectId: string;
+  subjectType: number;
+  title: string;
+  description?: string;
+  releaseDate?: string;
+  duration?: string;
+  genre?: string;
+  cover?: {
+    url?: string;
+    thumbnail?: string;
+  };
+  countryName?: string;
+  imdbRatingValue?: string;
+  language?: string;
+}
+
+interface RawMovieBoxSearch {
+  pager?: {
+    hasMore?: boolean;
+    nextPage?: string;
+    page?: string;
+    perPage?: number;
+    totalCount?: number;
+  };
+  items?: RawMovieBoxSubject[];
+  results?: Array<{
+    topicType?: string;
+    subjects?: RawMovieBoxSubject[];
+  }>;
+}
+
+function extractSearchItems(data: unknown): {
+  items: RawMovieBoxSubject[];
+  pager: MBSearchData['pager'];
+} {
+  const raw = data as RawMovieBoxSearch;
+
+  let items: RawMovieBoxSubject[] = [];
+
+  if (Array.isArray(raw?.items)) {
+    items = raw.items;
+  } else if (Array.isArray(raw?.results)) {
+    const subjectGroups = raw.results.filter(
+      (group) => group.topicType === 'SUBJECT'
+    );
+
+    items = subjectGroups.flatMap((group) =>
+      Array.isArray(group.subjects) ? group.subjects : []
+    );
+  }
+
+  items = items.filter(
+    (item) =>
+      item &&
+      typeof item.subjectId === 'string' &&
+      typeof item.title === 'string' &&
+      ALLOWED_SUBJECT_TYPES.has(item.subjectType)
+  );
+
+  const rawPager = raw?.pager;
+
+  return {
+    items,
+    pager: {
+      hasMore: rawPager?.hasMore ?? false,
+      nextPage: String(rawPager?.nextPage ?? '2'),
+      page: String(rawPager?.page ?? '1'),
+      perPage: Number(rawPager?.perPage ?? items.length),
+      totalCount: Math.max(
+        Number(rawPager?.totalCount ?? 0),
+        items.length
+      ),
+    },
+  };
+}
+
 async function handleSearch(
   request: Request,
   env: Env
@@ -316,7 +394,7 @@ async function handleSearch(
     `[MovieBox Search] Searching upstream for: "${searchQuery}" (Raw: "${rawQuery}")`
   );
 
-  const data = await fetchWithHostPool<MBSearchData>(
+  const data = await fetchWithHostPool<unknown>(
     env,
     PATHS.search,
     'POST',
@@ -330,41 +408,44 @@ async function handleSearch(
     }
   );
 
-  console.log(
-    `[MovieBox Search] Response received. Items count: ${data?.items?.length ?? 0}`
-  );
-
   if (!data) {
     return json(
       {
-        error: 'MovieBox upstream search failed. Check Worker logs and relay configuration.',
+        error: 'MovieBox upstream search failed. Check Vercel and Render logs.',
       },
       502
     );
   }
 
-  const items = (data.items || [])
-    .filter((item) => ALLOWED_SUBJECT_TYPES.has(item.subjectType))
-    .map((item) => ({
-      subjectId: item.subjectId,
-      subjectType: item.subjectType,
-      title: item.title,
-      description: item.description ?? '',
-      releaseDate: item.releaseDate ?? null,
-      duration: item.duration ?? null,
-      genre: item.genre ?? null,
-      poster: item.cover?.url ?? null,
-      thumbnail: item.cover?.thumbnail ?? null,
-      country: item.countryName ?? null,
-      rating:
-        item.imdbRatingValue && item.imdbRatingValue !== '0'
-          ? parseFloat(item.imdbRatingValue)
-          : null,
-      language: item.language ?? null,
-      type: resolveSubjectType(item.subjectType),
-    }));
+  const normalized = extractSearchItems(data);
 
-  return json({ items, pager: data.pager });
+  const items = normalized.items.map((item) => ({
+    subjectId: item.subjectId,
+    subjectType: item.subjectType,
+    title: item.title,
+    description: item.description ?? '',
+    releaseDate: item.releaseDate ?? null,
+    duration: item.duration ?? null,
+    genre: item.genre ?? null,
+    poster: item.cover?.url ?? null,
+    thumbnail: item.cover?.thumbnail ?? null,
+    country: item.countryName ?? null,
+    rating:
+      item.imdbRatingValue && item.imdbRatingValue !== '0'
+        ? parseFloat(item.imdbRatingValue)
+        : null,
+    language: item.language ?? null,
+    type: resolveSubjectType(item.subjectType),
+  }));
+
+  console.log(
+    `[MovieBox Search] Extracted ${items.length} movie/series results for "${searchQuery}"`
+  );
+
+  return json({
+    items,
+    pager: normalized.pager,
+  });
 }
 
 async function handleInfo(
@@ -582,7 +663,7 @@ async function handleRequest(
   if (path === '/debug-probe' && request.method === 'GET') {
     const testQuery = url.searchParams.get('q') ?? 'Avatar';
 
-    const result = await fetchWithHostPool<MBSearchData>(
+    const result = await fetchWithHostPool<unknown>(
       env,
       PATHS.search,
       'POST',
@@ -673,4 +754,4 @@ export default {
       return json({ error: message }, 500);
     }
   },
-}
+};
