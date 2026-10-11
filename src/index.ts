@@ -225,10 +225,9 @@ async function proxyMediaUrl(
     filename
   );
 
-  const proxy = new URL(
-    `${relayBaseUrl}/media/${base64UrlEncode(target.toString())}`
-  );
-
+const proxy = new URL(
+  relayBaseUrl + '/media/' + base64UrlEncode(target.toString())
+);
   proxy.searchParams.set('e', String(expires));
   proxy.searchParams.set('s', signature);
 
