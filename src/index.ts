@@ -1,4 +1,4 @@
-```ts
+
 // src/index.ts
 // Spün MovieBox API
 
@@ -674,5 +674,4 @@ export default {
       return json({ error: message }, 500);
     }
   },
-};
-```
+}
