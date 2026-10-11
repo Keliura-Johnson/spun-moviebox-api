@@ -306,12 +306,11 @@ export async function fetchWithHostPool<T>(
           null,
           null
         );
-        // Fallback: if upstream doesn't return x-user token, use a dummy placeholder token so requests still succeed
-        return result.freshXUserToken ?? 'bypassed_auth_token';
+        return result.freshXUserToken;
       });
     } catch (e) {
-      console.warn(`[MovieBox] Auth bootstrap soft-failed, proceeding with bypass token: ${e}`);
-      authToken = 'bypassed_auth_token';
+      console.error(`[MovieBox] Auth bootstrap failed; refusing to send a fake token: ${e}`);
+      return null;
     }
   }
 
@@ -339,10 +338,11 @@ export async function fetchWithHostPool<T>(
           null,
           null
         );
-        return bootstrapResult.freshXUserToken ?? 'bypassed_auth_token';
+        return bootstrapResult.freshXUserToken;
       });
-    } catch {
-      authToken = 'bypassed_auth_token';
+    } catch (e) {
+      console.error(`[MovieBox] Token refresh failed: ${e}`);
+      return null;
     }
 
     result = await attemptHostPool<T>(env, path, method, params, bodyStr, authToken);
