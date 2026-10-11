@@ -333,25 +333,62 @@ interface RawSearchResponse {
   pager?: Partial<MBSearchData['pager']>;
   items?: MBSearchItem[];
   results?: Array<{
+    topicType?: string;
     subjects?: MBSearchItem[];
   }>;
+  data?: unknown;
+  result?: unknown;
 }
 
 function normalizeSearchData(value: unknown): MBSearchData | null {
-  if (!value || typeof value !== 'object') {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
 
   const raw = value as RawSearchResponse;
 
-  const items =
-    Array.isArray(raw.items) && raw.items.length > 0
-      ? raw.items
-      : Array.isArray(raw.results)
-        ? raw.results.flatMap((group) =>
-            Array.isArray(group.subjects) ? group.subjects : []
-          )
-        : [];
+  // Some responses wrap the actual search data inside another object.
+  const nestedCandidates = [raw.data, raw.result];
+
+  for (const candidate of nestedCandidates) {
+    if (
+      candidate &&
+      typeof candidate === 'object' &&
+      !Array.isArray(candidate)
+    ) {
+      const nested = normalizeSearchData(candidate);
+
+      if (nested && nested.items.length > 0) {
+        return nested;
+      }
+    }
+  }
+
+  let items: MBSearchItem[] = [];
+
+  // Use items when populated; otherwise, fall back to results.
+  if (Array.isArray(raw.items) && raw.items.length > 0) {
+    items = raw.items;
+  } else if (Array.isArray(raw.results)) {
+    items = raw.results.flatMap((group) => {
+      if (group.topicType && group.topicType !== 'SUBJECT') {
+        return [];
+      }
+
+      return Array.isArray(group.subjects) ? group.subjects : [];
+    });
+  }
+
+  // Keep actual movies and series; exclude videos and music.
+  items = items.filter(
+    (item) =>
+      item &&
+      typeof item.subjectId === 'string' &&
+      item.subjectId.length > 0 &&
+      typeof item.title === 'string' &&
+      typeof item.subjectType === 'number' &&
+      [1, 2, 7].includes(item.subjectType)
+  );
 
   const pager = raw.pager ?? {};
 
