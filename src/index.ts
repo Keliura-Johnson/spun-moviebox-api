@@ -392,7 +392,6 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return json({ status: configured ? 'ok' : 'misconfigured', ts: Date.now(), configured });
   }
 
-  if (!isAuthorized(request, env)) return err('Unauthorized', 401);
 
   if (path === '/debug-probe' && request.method === 'GET') {
     const testQuery = url.searchParams.get('q') ?? 'Avatar';
