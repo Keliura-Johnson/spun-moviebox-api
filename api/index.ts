@@ -115,11 +115,17 @@ export default async function handler(
         : {}),
     });
 
+    const processEnv = (
+      globalThis as typeof globalThis & {
+        process?: { env?: Record<string, string | undefined> };
+      }
+    ).process?.env ?? {};
+
     const env = {
-      MOVIEBOX_SECRET: process.env.MOVIEBOX_SECRET ?? '',
-      NIGERIA_IP: process.env.NIGERIA_IP,
-      RELAY_URL: process.env.RELAY_URL ?? '',
-      RELAY_SECRET: process.env.RELAY_SECRET ?? '',
+      MOVIEBOX_SECRET: processEnv.MOVIEBOX_SECRET ?? '',
+      NIGERIA_IP: processEnv.NIGERIA_IP,
+      RELAY_URL: processEnv.RELAY_URL ?? '',
+      RELAY_SECRET: processEnv.RELAY_SECRET ?? '',
       MOVIEBOX_SESSION_KV: sessionKV,
     };
 
